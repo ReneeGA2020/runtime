@@ -1189,13 +1189,11 @@ extern "C" void QCALLTYPE AssemblyNative_GetImageRuntimeVersion(QCall::AssemblyH
 
 /*static*/
 
-extern "C" INT_PTR QCALLTYPE AssemblyNative_InitializeAssemblyLoadContext(INT_PTR ptrAssemblyLoadContext, BOOL fRepresentsTPALoadContext, BOOL fIsCollectible, QCallExceptionStatus* qcallError)
+static INT_PTR InitializeAssemblyLoadContextWorker(INT_PTR ptrAssemblyLoadContext, BOOL fRepresentsTPALoadContext,
+                                                  BOOL fIsCollectible, bool interpreterRequired)
 {
-    QCALL_CONTRACT;
-
+    STANDARD_VM_CONTRACT;
     INT_PTR ptrNativeAssemblyBinder = 0;
-
-    BEGIN_QCALL;
 
     // We do not need to take a lock since this method is invoked from the ctor of AssemblyLoadContext managed type and
     // only one thread is ever executing a ctor for a given instance.
@@ -1241,7 +1239,7 @@ extern "C" INT_PTR QCALLTYPE AssemblyNative_InitializeAssemblyLoadContext(INT_PT
             loaderAllocator->ActivateManagedTracking();
         }
 
-        IfFailThrow(CustomAssemblyBinder::SetupContext(pDefaultBinder, loaderAllocator, loaderAllocatorHandle, ptrAssemblyLoadContext, &pCustomBinder));
+        IfFailThrow(CustomAssemblyBinder::SetupContext(pDefaultBinder, loaderAllocator, loaderAllocatorHandle, ptrAssemblyLoadContext, interpreterRequired, &pCustomBinder));
         ptrNativeAssemblyBinder = reinterpret_cast<INT_PTR>(pCustomBinder);
     }
     else
@@ -1255,9 +1253,58 @@ extern "C" INT_PTR QCALLTYPE AssemblyNative_InitializeAssemblyLoadContext(INT_PT
         ptrNativeAssemblyBinder = reinterpret_cast<INT_PTR>(pDefaultBinder);
     }
 
-    END_QCALL;
-
     return ptrNativeAssemblyBinder;
+}
+
+extern "C" INT_PTR QCALLTYPE AssemblyNative_InitializeAssemblyLoadContext(INT_PTR ptrAssemblyLoadContext, BOOL fRepresentsTPALoadContext, BOOL fIsCollectible, QCallExceptionStatus* qcallError)
+{
+    QCALL_CONTRACT;
+    INT_PTR result = 0;
+    BEGIN_QCALL;
+    result = InitializeAssemblyLoadContextWorker(ptrAssemblyLoadContext, fRepresentsTPALoadContext, fIsCollectible, false);
+    END_QCALL;
+    return result;
+}
+
+extern "C" INT_PTR QCALLTYPE AssemblyNative_InitializeInterpreterRequiredLoadContext(INT_PTR ptrAssemblyLoadContext, QCallExceptionStatus* qcallError)
+{
+    QCALL_CONTRACT;
+    INT_PTR result = 0;
+    BEGIN_QCALL;
+#ifndef FEATURE_INTERPRETER
+    COMPlusThrowNonLocalized(kPlatformNotSupportedException, W("Interpreter-required load contexts are not supported by this runtime build."));
+#else
+    // Private creation route has a fixed collectible custom-binder topology.
+    result = InitializeAssemblyLoadContextWorker(ptrAssemblyLoadContext, FALSE, TRUE, true);
+#endif
+    END_QCALL;
+    return result;
+}
+
+extern "C" INT32 QCALLTYPE AssemblyNative_RuneCLRGetExecutionPolicyVersion(QCallExceptionStatus* qcallError)
+{
+    QCALL_CONTRACT;
+    INT32 version = 0;
+    BEGIN_QCALL;
+#ifdef FEATURE_INTERPRETER
+    version = 1;
+#endif
+    END_QCALL;
+    return version;
+}
+
+extern "C" INT32 QCALLTYPE AssemblyNative_RuneCLRGetExecutionPolicy(INT_PTR ptrNativeAssemblyBinder, QCallExceptionStatus* qcallError)
+{
+    QCALL_CONTRACT;
+    INT32 policy = 0;
+    BEGIN_QCALL;
+    if (ptrNativeAssemblyBinder == 0)
+        COMPlusThrow(kInvalidOperationException);
+    // Managed query keeps its ALC alive and holds the existing unload lock.
+    AssemblyBinder* binder = reinterpret_cast<AssemblyBinder*>(ptrNativeAssemblyBinder);
+    policy = binder->RuneCLRRequiresInterpreter() ? 1 : 0;
+    END_QCALL;
+    return policy;
 }
 
 /*static*/

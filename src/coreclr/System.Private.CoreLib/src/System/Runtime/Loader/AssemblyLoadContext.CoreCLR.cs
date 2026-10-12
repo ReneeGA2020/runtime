@@ -11,6 +11,59 @@ namespace System.Runtime.Loader
 {
     public partial class AssemblyLoadContext
     {
+        // Private matching-CoreLib experiment, not a public execution-policy API.
+        private static AssemblyLoadContext RuneCLR_CreateInterpreterRequired(
+            string name, Func<AssemblyLoadContext, AssemblyName, Assembly?> managedResolver)
+        {
+            ArgumentNullException.ThrowIfNull(name);
+            ArgumentNullException.ThrowIfNull(managedResolver);
+            if (RuneCLR_GetExecutionPolicyVersion() != 1)
+                throw new PlatformNotSupportedException("The runtime cannot create an interpreter-required load context.");
+            return new RuneCLRInterpreterLoadContext(name, managedResolver);
+        }
+
+        private static int RuneCLR_GetExecutionPolicyVersion() => RuneCLR_GetExecutionPolicyVersionNative();
+
+        private int RuneCLR_GetExecutionPolicy()
+        {
+            lock (_unloadLock)
+            {
+                VerifyIsAlive();
+                int policy = RuneCLR_GetExecutionPolicyNative(_nativeAssemblyLoadContext);
+                GC.KeepAlive(this);
+                return policy;
+            }
+        }
+
+        private sealed class RuneCLRInterpreterLoadContext : AssemblyLoadContext
+        {
+            private readonly Func<AssemblyLoadContext, AssemblyName, Assembly?> _managedResolver;
+
+            internal RuneCLRInterpreterLoadContext(
+                string name, Func<AssemblyLoadContext, AssemblyName, Assembly?> managedResolver)
+                : base(false, true, name, requiresInterpreter: true)
+            {
+                _managedResolver = managedResolver;
+            }
+
+            protected override Assembly? Load(AssemblyName assemblyName) => _managedResolver(this, assemblyName);
+
+            protected override IntPtr LoadUnmanagedDll(string unmanagedDllName) =>
+                throw new NotSupportedException("Native libraries cannot be loaded through an interpreter-required context.");
+        }
+
+        [ErrorHandler(typeof(QCallExceptionStatusMarshaller), ErrorLocation.HiddenLastParameter)]
+        [LibraryImport(RuntimeHelpers.QCall, EntryPoint = "AssemblyNative_InitializeInterpreterRequiredLoadContext")]
+        private static partial IntPtr InitializeInterpreterRequiredLoadContext(IntPtr ptrAssemblyLoadContext);
+
+        [ErrorHandler(typeof(QCallExceptionStatusMarshaller), ErrorLocation.HiddenLastParameter)]
+        [LibraryImport(RuntimeHelpers.QCall, EntryPoint = "AssemblyNative_RuneCLRGetExecutionPolicyVersion")]
+        private static partial int RuneCLR_GetExecutionPolicyVersionNative();
+
+        [ErrorHandler(typeof(QCallExceptionStatusMarshaller), ErrorLocation.HiddenLastParameter)]
+        [LibraryImport(RuntimeHelpers.QCall, EntryPoint = "AssemblyNative_RuneCLRGetExecutionPolicy")]
+        private static partial int RuneCLR_GetExecutionPolicyNative(IntPtr ptrNativeAssemblyBinder);
+
         [ErrorHandler(typeof(QCallExceptionStatusMarshaller), ErrorLocation.HiddenLastParameter)]
         [LibraryImport(RuntimeHelpers.QCall, EntryPoint = "AssemblyNative_InitializeAssemblyLoadContext")]
         private static partial IntPtr InitializeAssemblyLoadContext(IntPtr ptrAssemblyLoadContext, [MarshalAs(UnmanagedType.Bool)] bool fRepresentsTPALoadContext, [MarshalAs(UnmanagedType.Bool)] bool isCollectible);

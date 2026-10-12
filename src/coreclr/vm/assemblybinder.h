@@ -32,6 +32,10 @@ public:
     /// </summary>
     virtual bool IsDefault() = 0;
 
+    // Private RuneCLR experiment: assigned before the binder can load any module.
+    // No setter and no process-wide metadata registry.
+    bool RuneCLRRequiresInterpreter() const { return m_runeCLRInterpreterRequired; }
+
     inline BINDER_SPACE::ApplicationContext* GetAppContext()
     {
         return &m_appContext;
@@ -60,7 +64,14 @@ public:
     void DeclareDependencyOnMvid(LPCUTF8 simpleName, GUID mvid, bool compositeComponent, LPCUTF8 imageName);
 #endif // FEATURE_READYTORUN
 
+protected:
+    explicit AssemblyBinder(bool interpreterRequired = false)
+        : m_runeCLRInterpreterRequired(interpreterRequired)
+    {
+    }
+
 private:
+    const bool m_runeCLRInterpreterRequired;
 
 #ifdef FEATURE_READYTORUN
     // Must be called under the LoadLock

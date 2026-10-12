@@ -20,8 +20,7 @@
 #endif
 
 RELEASE_CONFIG_METHODSET(Interpreter, "Interpreter")
-// Retail diagnostic, test fixture only: no effect without the startup policy switch.
-RELEASE_CONFIG_INTEGER(RuneCLRInterpretCollectible, "RuneCLRInterpretCollectible", 0);
+// Retail diagnostic, test fixture only: no effect without an explicit method-set.
 RELEASE_CONFIG_METHODSET(RuneCLRInterpreterRefuseMethods, "RuneCLRInterpreterRefuseMethods")
 CONFIG_METHODSET(InterpHaltOnCall, "InterpHaltOnCall"); // Assert in the compiler when compiling a call to these method(s)
 CONFIG_METHODSET(InterpHalt, "InterpHalt");

@@ -133,8 +133,7 @@ CorJitResult CILInterp::compileMethod(ICorJitInfo*         compHnd,
     // Scoped regression injection. Even a broad operator method-set cannot
     // refuse arbitrary production methods: only this named fixture is allowed.
     // An unmarked mode-1 control exercises genuine SKIPPED-to-JIT fallback.
-    if (InterpConfig.RuneCLRInterpretCollectible() != 0 &&
-        !InterpConfig.RuneCLRInterpreterRefuseMethods().isEmpty())
+    if (!InterpConfig.RuneCLRInterpreterRefuseMethods().isEmpty())
     {
         const char* className = nullptr;
         const char* namespaceName = nullptr;

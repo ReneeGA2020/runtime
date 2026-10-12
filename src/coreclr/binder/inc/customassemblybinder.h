@@ -37,12 +37,13 @@ public:
     // Class functions
     //-------------------------------------------------------------------------
 
-    CustomAssemblyBinder();
+    explicit CustomAssemblyBinder(bool interpreterRequired = false);
 
     static HRESULT SetupContext(DefaultAssemblyBinder *pDefaultBinder,
                                 AssemblyLoaderAllocator* pLoaderAllocator,
                                 void* loaderAllocatorHandle,
                                 UINT_PTR ptrAssemblyLoadContext,
+                                bool interpreterRequired,
                                 CustomAssemblyBinder **ppBindContext);
 
     void PrepareForLoadContextRelease(INT_PTR ptrManagedStrongAssemblyLoadContext);

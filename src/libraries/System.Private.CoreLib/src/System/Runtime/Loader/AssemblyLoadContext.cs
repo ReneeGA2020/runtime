@@ -81,6 +81,11 @@ namespace System.Runtime.Loader
         }
 
         private protected AssemblyLoadContext(bool representsTPALoadContext, bool isCollectible, string? name)
+            : this(representsTPALoadContext, isCollectible, name, requiresInterpreter: false)
+        {
+        }
+
+        private AssemblyLoadContext(bool representsTPALoadContext, bool isCollectible, string? name, bool requiresInterpreter)
         {
             // Initialize the VM side of AssemblyLoadContext if not already done.
             _isCollectible = isCollectible;
@@ -101,7 +106,27 @@ namespace System.Runtime.Loader
             // If this is a collectible ALC, we are creating a weak handle tracking resurrection otherwise we use a strong handle
             var thisHandle = GCHandle.Alloc(this, IsCollectible ? GCHandleType.WeakTrackResurrection : GCHandleType.Normal);
             var thisHandlePtr = GCHandle.ToIntPtr(thisHandle);
-            _nativeAssemblyLoadContext = InitializeAssemblyLoadContext(thisHandlePtr, representsTPALoadContext, isCollectible);
+#if CORECLR
+            if (requiresInterpreter)
+            {
+                try
+                {
+                    _nativeAssemblyLoadContext = InitializeInterpreterRequiredLoadContext(thisHandlePtr);
+                }
+                catch
+                {
+                    // Native initialization failed before a binder was returned.
+                    // Do not retain the handle or finalize a zero native pointer.
+                    thisHandle.Free();
+                    _unloadLock = null!;
+                    throw;
+                }
+            }
+            else
+#endif
+            {
+                _nativeAssemblyLoadContext = InitializeAssemblyLoadContext(thisHandlePtr, representsTPALoadContext, isCollectible);
+            }
 
             // Add this instance to the list of alive ALC
             Dictionary<long, WeakReference<AssemblyLoadContext>> allContexts = AllContexts;

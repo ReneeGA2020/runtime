@@ -30,6 +30,7 @@
 #include "fieldmarshaler.h"
 #include "versionresilienthashcode.h"
 #include "typehashingalgorithms.h"
+#include "assemblybinder.h"
 
 #ifdef FEATURE_COMINTEROP
 #include "comcallablewrapper.h"
@@ -1621,7 +1622,17 @@ bool MethodDesc::HasRequiredInterpreterPolicy()
 {
     LIMITED_METHOD_CONTRACT;
 #ifdef FEATURE_INTERPRETER
-    return g_pConfig->RuneCLRInterpretCollectible() && IsIL() && GetModule()->IsCollectible();
+    if (!IsIL())
+        return false;
+
+    Module* definitionModule = GetModule();
+    if (g_pConfig->RuneCLRInterpretCollectible() && definitionModule->IsCollectible())
+        return true;
+
+    // Ask the defining assembly's binder, not the allocator of a closed
+    // instantiation such as a trusted List<UGCStruct> body.
+    PTR_AssemblyBinder binder = definitionModule->GetPEAssembly()->GetAssemblyBinder();
+    return binder != nullptr && binder->RuneCLRRequiresInterpreter();
 #else
     return false;
 #endif

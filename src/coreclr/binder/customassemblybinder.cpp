@@ -164,6 +164,7 @@ HRESULT CustomAssemblyBinder::SetupContext(DefaultAssemblyBinder *pDefaultBinder
                                            AssemblyLoaderAllocator* pLoaderAllocator,
                                            void* loaderAllocatorHandle,
                                            UINT_PTR ptrAssemblyLoadContext,
+                                           bool interpreterRequired,
                                            CustomAssemblyBinder **ppBindContext)
 {
     HRESULT hr = E_FAIL;
@@ -173,7 +174,7 @@ HRESULT CustomAssemblyBinder::SetupContext(DefaultAssemblyBinder *pDefaultBinder
         {
             NewHolder<CustomAssemblyBinder> pBinder;
 
-            SAFE_NEW(pBinder, CustomAssemblyBinder);
+            SAFE_NEW(pBinder, CustomAssemblyBinder(interpreterRequired));
             hr = pBinder->GetAppContext()->Init();
             if(SUCCEEDED(hr))
             {
@@ -244,7 +245,8 @@ void CustomAssemblyBinder::PrepareForLoadContextRelease(INT_PTR ptrManagedStrong
     m_loaderAllocatorHandle = NULL;
 }
 
-CustomAssemblyBinder::CustomAssemblyBinder()
+CustomAssemblyBinder::CustomAssemblyBinder(bool interpreterRequired)
+    : AssemblyBinder(interpreterRequired)
 {
     m_pDefaultBinder = NULL;
     m_ptrManagedStrongAssemblyLoadContext = (INT_PTR)NULL;
