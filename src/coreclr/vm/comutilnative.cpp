@@ -13,6 +13,8 @@
 #include "excep.h"
 #include "vars.hpp"
 #include "comutilnative.h"
+#include "assemblybinder.h"
+#include "runeclrinstructionmeter.h"
 
 #include "utilcode.h"
 #include "frames.h"
@@ -795,6 +797,36 @@ extern "C" void* QCALLTYPE GCInterface_GetNextFinalizableObject(QCall::ObjectHan
     END_QCALL;
 
     return (void*)funcPtr;
+}
+
+extern "C" INT32 QCALLTYPE GCInterface_RuneCLRGetTerminalFinalizerBoundaryVersion()
+{
+    QCALL_CONTRACT_NO_GC_TRANSITION;
+#ifdef FEATURE_INTERPRETER
+    return 1;
+#else
+    return 0;
+#endif
+}
+
+extern "C" CLR_BOOL QCALLTYPE GCInterface_RuneCLRIsTerminatedFinalizerOwner(QCall::ObjectHandleOnStack target)
+{
+    QCALL_CONTRACT_NO_GC_TRANSITION;
+#ifdef FEATURE_INTERPRETER
+    OBJECTREF object = target.Get();
+    if (object == NULL)
+        return FALSE;
+    // GetNextFinalizableObject has restored the slot. Resolve its actual implementation
+    // rather than the receiver's type: an inherited trusted finalizer retains its own policy.
+    MethodDesc* finalizer = object->GetMethodTable()->GetMethodDescForSlot_NoThrow(g_pObjectFinalizerMD->GetSlot());
+    if (finalizer == nullptr)
+        return FALSE;
+    AssemblyBinder* binder = finalizer->GetModule()->GetPEAssembly()->GetAssemblyBinder();
+    RuneCLRInstructionMeter* meter = binder == nullptr ? nullptr : binder->GetRuneCLRInstructionMeter();
+    return meter != nullptr && meter->IsTerminalPrototype() && meter->IsTerminated();
+#else
+    return FALSE;
+#endif
 }
 
 /*==========================WaitForPendingFinalizers============================

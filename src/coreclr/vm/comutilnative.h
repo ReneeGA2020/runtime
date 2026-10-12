@@ -195,6 +195,8 @@ extern "C" INT64 QCALLTYPE GCInterface_GetTotalMemory(QCallExceptionStatus* qcal
 extern "C" void QCALLTYPE GCInterface_Collect(INT32 generation, INT32 mode, CLR_BOOL lowMemoryPressure, QCallExceptionStatus* qcallError);
 
 extern "C" void* QCALLTYPE GCInterface_GetNextFinalizableObject(QCall::ObjectHandleOnStack pObj, QCallExceptionStatus* qcallError);
+extern "C" INT32 QCALLTYPE GCInterface_RuneCLRGetTerminalFinalizerBoundaryVersion();
+extern "C" CLR_BOOL QCALLTYPE GCInterface_RuneCLRIsTerminatedFinalizerOwner(QCall::ObjectHandleOnStack target);
 
 extern "C" void QCALLTYPE GCInterface_WaitForPendingFinalizers(QCallExceptionStatus* qcallError);
 extern "C" void* QCALLTYPE GCInterface_RegisterFrozenSegment(void *pSection, SIZE_T sizeSection, QCallExceptionStatus* qcallError);

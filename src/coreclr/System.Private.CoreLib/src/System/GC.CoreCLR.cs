@@ -338,6 +338,18 @@ namespace System
         [LibraryImport(RuntimeHelpers.QCall, EntryPoint = "GCInterface_GetNextFinalizableObject")]
         private static unsafe partial void* GetNextFinalizeableObject(ObjectHandleOnStack target);
 
+        // Private terminal-prototype boundary discovery; not a production termination capability.
+        private static int RuneCLR_GetTerminalFinalizerBoundaryVersion() => RuneCLR_GetTerminalFinalizerBoundaryVersionNative();
+
+        [LibraryImport(RuntimeHelpers.QCall, EntryPoint = "GCInterface_RuneCLRGetTerminalFinalizerBoundaryVersion")]
+        [SuppressGCTransition]
+        private static partial int RuneCLR_GetTerminalFinalizerBoundaryVersionNative();
+
+        [LibraryImport(RuntimeHelpers.QCall, EntryPoint = "GCInterface_RuneCLRIsTerminatedFinalizerOwner")]
+        [SuppressGCTransition]
+        [return: MarshalAs(UnmanagedType.U1)]
+        private static partial bool RuneCLR_IsTerminatedFinalizerOwner(ObjectHandleOnStack target);
+
         [UnmanagedCallersOnly]
         private static unsafe uint RunFinalizers()
         {
@@ -353,15 +365,18 @@ namespace System
 
                 try
                 {
-                    ((delegate*<object, void>)fptr)(target!);
+                    if (!RuneCLR_IsTerminatedFinalizerOwner(ObjectHandleOnStack.Create(ref target)))
+                        ((delegate*<object, void>)fptr)(target!);
                 }
-                catch (Exception ex) when (ExceptionHandling.IsHandledByGlobalHandler(ex))
+                catch (Exception ex) when (RuneCLR_IsTerminatedFinalizerOwner(ObjectHandleOnStack.Create(ref target)) ||
+                                          ExceptionHandling.IsHandledByGlobalHandler(ex))
                 {
-                    // the handler returned "true" means the exception is now "handled" and we should continue.
+                    // Handle only an irrevocably terminated definition owner, or the existing global handler.
                 }
 
                 currentThread.ResetFinalizerThread();
                 count++;
+                KeepAlive(target);
             }
 
             return count;

@@ -19,6 +19,8 @@
       <method name="RuneCLR_GetTerminalPrototypeCleanupExecuted" />
     </type>
     <type fullname="System.GC">
+      <!-- Private finalizer boundary discovery for the opt-in terminal prototype. -->
+      <method name="RuneCLR_GetTerminalFinalizerBoundaryVersion" />
       <!-- Methods are used to register and unregister frozen segments. They are private and experimental. -->
       <method name="_RegisterFrozenSegment" />
       <method name="_UnregisterFrozenSegment" />
