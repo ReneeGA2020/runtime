@@ -437,6 +437,7 @@ public:
 
 #endif
 
+    bool RuneCLRInterpretCollectible() const { LIMITED_METHOD_CONTRACT; return runeCLRInterpretCollectible; }
 #ifdef FEATURE_INTERPRETER
     bool    EnableInterpreter()            const { LIMITED_METHOD_CONTRACT; return enableInterpreter; }
 #endif
@@ -602,6 +603,7 @@ private: //----------------------------------------------------------------
 #endif
 
     bool enableHWIntrinsic;
+    bool runeCLRInterpretCollectible;
 
 #ifdef FEATURE_INTERPRETER
     bool enableInterpreter;

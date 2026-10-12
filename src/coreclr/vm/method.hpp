@@ -1144,6 +1144,11 @@ public:
 
     Module *GetModule() const;
 
+    // Diagnostic startup policy for the defining IL module, not the allocator
+    // owning an instantiation of a trusted framework generic.
+    bool HasRequiredInterpreterPolicy();
+    bool RequiresInterpreterBody();
+
     Assembly *GetAssembly() const
     {
         WRAPPER_NO_CONTRACT;

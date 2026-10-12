@@ -1430,6 +1430,11 @@ static InterpByteCodeStart* PrepareInterpreterCode(MethodDesc* targetMethod, Int
 
     if (targetIp == NULL)
     {
+        // Do not poison a required body into the native-call path. This is a
+        // release-build rejection, not an assertion-only diagnostic.
+        if (targetMethod->RequiresInterpreterBody())
+            COMPlusThrowNonLocalized(kNotSupportedException, W("Required interpreted body has no interpreter bytecode."));
+
         // The prestub wasn't able to setup an interpreter code, so it will never be able to.
         targetMethod->PoisonInterpreterCode();
 #ifdef FEATURE_PORTABLE_ENTRYPOINTS

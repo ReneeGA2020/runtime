@@ -80,6 +80,7 @@ HRESULT EEConfig::Init()
     STANDARD_VM_CONTRACT;
 
     fInited = false;
+    runeCLRInterpretCollectible = false;
 
 #ifdef VERIFY_HEAP
     iGCHeapVerify = 0;          // Heap Verification OFF by default
@@ -296,6 +297,12 @@ HRESULT EEConfig::sync()
     ETWOnStartup (EEConfigSync_V1, EEConfigSyncEnd_V1);
 
     HRESULT hr = S_OK;
+
+    runeCLRInterpretCollectible = CLRConfig::GetConfigValue(CLRConfig::EXTERNAL_RuneCLRInterpretCollectible) != 0;
+#ifndef FEATURE_INTERPRETER
+    if (runeCLRInterpretCollectible)
+        return COR_E_PLATFORMNOTSUPPORTED;
+#endif
 
     // Note the global variable is not updated directly by the GetRegKey function
     // so we only update it once (to avoid reentrancy windows)

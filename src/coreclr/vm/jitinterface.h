@@ -914,6 +914,9 @@ public:
             GC_NOTRIGGER;
             MODE_ANY;
         } CONTRACTL_END;
+        // Base construction has already computed the normal compilation flags.
+        if (fd->RequiresInterpreterBody())
+            getJitFlagsInternal()->Set(CORJIT_FLAGS::CORJIT_FLAG_INTERPRET_REQUIRED);
     }
 
     void allocMem(AllocMemArgs *pArgs) override;

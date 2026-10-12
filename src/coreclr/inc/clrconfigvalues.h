@@ -294,6 +294,9 @@ RETAIL_CONFIG_STRING_INFO(EXTERNAL_AltJitOs, W("AltJitOS"), "Sets target OS for 
 RETAIL_CONFIG_STRING_INFO(EXTERNAL_AltJitExcludeAssemblies, W("AltJitExcludeAssemblies"), "Do not use AltJit on this semicolon-delimited list of assemblies.")
 #endif // defined(ALLOW_SXS_JIT)
 
+// This request is recognized even when interpreter support is not built in.
+// EEConfig rejects an enabled request on that build instead of silently ignoring it.
+RETAIL_CONFIG_DWORD_INFO(EXTERNAL_RuneCLRInterpretCollectible, W("RuneCLRInterpretCollectible"), 0, "Diagnostic: require interpretation of collectible-module IL bodies.")
 #ifdef FEATURE_INTERPRETER
 RETAIL_CONFIG_STRING_INFO(EXTERNAL_InterpreterName, W("InterpreterName"), "Primary interpreter to use")
 CONFIG_STRING_INFO(INTERNAL_InterpreterPath, W("InterpreterPath"), "Full path to the interpreter to use")

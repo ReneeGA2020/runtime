@@ -6639,7 +6639,7 @@ DWORD CEEInfo::getMethodAttribsInternal (CORINFO_METHOD_HANDLE ftn)
     }
 
     // Check for an inlining directive.
-    if (pMD->IsNotInline())
+    if (pMD->HasRequiredInterpreterPolicy() || pMD->IsNotInline())
     {
         /* Function marked as not inlineable */
         result |= CORINFO_FLG_DONT_INLINE;
@@ -7936,6 +7936,13 @@ CorInfoInline CEEInfo::canInline (CORINFO_METHOD_HANDLE hCaller,
 
     MethodDesc* pCaller = GetMethod(hCaller);
     MethodDesc* pCallee = GetMethod(hCallee);
+
+    if (pCallee->HasRequiredInterpreterPolicy())
+    {
+        result = INLINE_NEVER;
+        szFailReason = "Collectible IL body requires interpretation";
+        goto exit;
+    }
 
     if (pCallee->IsNoMetadata())
     {
@@ -13962,6 +13969,11 @@ PCODE UnsafeJitFunction(PrepareCodeConfig* config,
 
     NativeCodeVersion nativeCodeVersion = config->GetCodeVersion();
     MethodDesc* ftn = nativeCodeVersion.GetMethodDesc();
+    bool requiresInterpreter = ftn->RequiresInterpreterBody();
+#ifdef FEATURE_TIERED_COMPILATION
+    if (requiresInterpreter && nativeCodeVersion.GetOptimizationTier() == NativeCodeVersion::OptimizationTier1OSR)
+        COMPlusThrowNonLocalized(kNotSupportedException, W("Required interpreted body cannot use OSR."));
+#endif
 
     // If it's generic then we can only enter through an instantiated MethodDesc
     _ASSERTE(!ftn->IsGenericMethodDefinition());
@@ -13980,7 +13992,7 @@ PCODE UnsafeJitFunction(PrepareCodeConfig* config,
 
 #ifdef FEATURE_INTERPRETER
     InterpreterJitManager* interpreterMgr = ExecutionManager::GetInterpreterJitManager();
-    if (!interpreterMgr->IsInterpreterLoaded() && g_pConfig->EnableInterpreter())
+    if (!interpreterMgr->IsInterpreterLoaded() && (requiresInterpreter || g_pConfig->EnableInterpreter()))
     {
         if (
             !interpreterMgr->LoadInterpreter())
@@ -14041,6 +14053,11 @@ PCODE UnsafeJitFunction(PrepareCodeConfig* config,
         }
     }
 #endif // FEATURE_INTERPRETER
+
+    // A compiler skip is a recoverable rejection for required bodies, never a
+    // request to weaken their execution policy by invoking the native JIT.
+    if (requiresInterpreter && !ret)
+        COMPlusThrowNonLocalized(kNotSupportedException, W("Required interpreted body was declined by the interpreter."));
 
 #ifndef FEATURE_DYNAMIC_CODE_COMPILED
     if (!ret)

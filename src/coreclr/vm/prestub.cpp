@@ -373,7 +373,7 @@ PCODE MethodDesc::PrepareCode(PrepareCodeConfig* pConfig)
     }
 #endif // FEATURE_CODE_VERSIONING
 
-    if (pConfig->MayUsePrecompiledCode() && (!IsPInvoke() || MayUsePrecompiledILStub()) && !IsCLRToCOMCall())
+    if (!HasRequiredInterpreterPolicy() && pConfig->MayUsePrecompiledCode() && (!IsPInvoke() || MayUsePrecompiledILStub()) && !IsCLRToCOMCall())
     {
         _ASSERTE(!IsPInvoke() || (!GetModule()->IsReadyToRun() || GetModule()->GetReadyToRunInfo()->HasNonShareablePInvokeStubs()));
         if (pCode == (PCODE)NULL)
@@ -487,6 +487,9 @@ PCODE MethodDesc::PublishPrecompiledCode(PrepareCodeConfig* pConfig, PCODE pCode
 PCODE MethodDesc::GetPrecompiledR2RCode(PrepareCodeConfig* pConfig)
 {
     STANDARD_VM_CONTRACT;
+    // Cover direct callers and the entire alternate/unrelated generic search.
+    if (HasRequiredInterpreterPolicy())
+        return (PCODE)NULL;
 
     PCODE pCode = (PCODE)NULL;
 #ifdef FEATURE_READYTORUN
@@ -683,7 +686,7 @@ PCODE MethodDesc::JitCompileCode(PrepareCodeConfig* pConfig)
             // Multi-core-jitted code is generated for the default code version at the initial optimization tier, and so is only
             // applicable to the default code version
             NativeCodeVersion codeVersion = pConfig->GetCodeVersion();
-            if (codeVersion.IsDefaultVersion())
+            if (codeVersion.IsDefaultVersion() && !HasRequiredInterpreterPolicy())
             {
                 bool wasTier0 = false;
                 pCode = GetMulticoreJitCode(pConfig, &wasTier0);

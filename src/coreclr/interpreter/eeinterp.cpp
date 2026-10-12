@@ -73,13 +73,16 @@ CorJitResult CILInterp::compileMethod(ICorJitInfo*         compHnd,
 {
 
     ArenaAllocatorWithDestructorT<InterpMemKindTraits> arenaAllocator;
-
 #if defined(FEATURE_DYNAMIC_CODE_COMPILED)
-    bool doInterpret = false;
+    CORJIT_FLAGS jitFlags;
+    compHnd->getJitFlags(&jitFlags, sizeof(jitFlags));
+    bool requiresInterpreter = jitFlags.IsSet(CORJIT_FLAGS::CORJIT_FLAG_INTERPRET_REQUIRED);
+    bool doInterpret = requiresInterpreter;
 
     if ((g_interpModule != NULL) && (methodInfo->scope == g_interpModule))
         doInterpret = true;
 
+    if (!requiresInterpreter)
     {
         switch (InterpConfig.InterpMode())
         {
@@ -126,6 +129,27 @@ CorJitResult CILInterp::compileMethod(ICorJitInfo*         compHnd,
         return CORJIT_SKIPPED;
     }
 #endif // FEATURE_DYNAMIC_CODE_COMPILED
+
+    // Scoped regression injection. Even a broad operator method-set cannot
+    // refuse arbitrary production methods: only this named fixture is allowed.
+    // An unmarked mode-1 control exercises genuine SKIPPED-to-JIT fallback.
+    if (InterpConfig.RuneCLRInterpretCollectible() != 0 &&
+        !InterpConfig.RuneCLRInterpreterRefuseMethods().isEmpty())
+    {
+        const char* className = nullptr;
+        const char* namespaceName = nullptr;
+        const char* methodName = compHnd->getMethodNameFromMetadata(methodInfo->ftn, &className, &namespaceName, nullptr, 0);
+        const char* assemblyName = compHnd->getClassAssemblyName(compHnd->getMethodClass(methodInfo->ftn));
+        if (methodName && className && namespaceName && assemblyName &&
+            !strcmp(methodName, "Reject") && !strcmp(className, "Entry") &&
+            !strcmp(namespaceName, "SelectionUGC.Refusal") &&
+            !strcmp(assemblyName, "SelectionProbe.Refusal") &&
+            InterpConfig.RuneCLRInterpreterRefuseMethods().contains(compHnd, methodInfo->ftn, compHnd->getMethodClass(methodInfo->ftn), &methodInfo->args))
+        {
+            printf("RuneCLRInterpreterRefusal: SelectionUGC.Refusal.Entry:Reject CORJIT_SKIPPED\n");
+            return CORJIT_SKIPPED;
+        }
+    }
 
     try
     {

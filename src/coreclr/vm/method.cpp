@@ -1617,6 +1617,25 @@ Module* MethodDesc::GetLoaderModule()
 }
 
 //*******************************************************************************
+bool MethodDesc::HasRequiredInterpreterPolicy()
+{
+    LIMITED_METHOD_CONTRACT;
+#ifdef FEATURE_INTERPRETER
+    return g_pConfig->RuneCLRInterpretCollectible() && IsIL() && GetModule()->IsCollectible();
+#else
+    return false;
+#endif
+}
+
+bool MethodDesc::RequiresInterpreterBody()
+{
+    WRAPPER_NO_CONTRACT;
+    // Runtime-created ABI bridges may remain native; their underlying author
+    // IL body must independently pass this predicate. Native lookup/inlining
+    // guards use the broader policy predicate, including wrappers.
+    return HasRequiredInterpreterPolicy() && !IsWrapperStub();
+}
+
 Module *MethodDesc::GetModule() const
 {
     STATIC_CONTRACT_NOTHROW;
@@ -3211,6 +3230,7 @@ bool MethodDesc::DetermineIsEligibleForTieredCompilationInvariantForAllMethodsIn
     return
         // Policy
         g_pConfig->TieredCompilation() &&
+        !HasRequiredInterpreterPolicy() &&
 
         // Functional requirement
         CodeVersionManager::IsMethodSupported(this) &&
