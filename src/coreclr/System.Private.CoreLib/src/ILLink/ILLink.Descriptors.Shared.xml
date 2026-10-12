@@ -1,5 +1,11 @@
 <linker>
   <assembly fullname="System.Private.CoreLib">
+    <type fullname="System.Runtime.Loader.AssemblyLoadContext">
+      <!-- Private RuneCLR experiment bridge, invoked by trusted host reflection. -->
+      <method name="RuneCLR_CreateInterpreterRequired" />
+      <method name="RuneCLR_GetExecutionPolicyVersion" />
+      <method name="RuneCLR_GetExecutionPolicy" />
+    </type>
     <type fullname="System.GC">
       <!-- Methods are used to register and unregister frozen segments. They are private and experimental. -->
       <method name="_RegisterFrozenSegment" />
