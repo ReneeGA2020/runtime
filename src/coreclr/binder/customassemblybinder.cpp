@@ -174,7 +174,7 @@ HRESULT CustomAssemblyBinder::SetupContext(DefaultAssemblyBinder *pDefaultBinder
         {
             NewHolder<CustomAssemblyBinder> pBinder;
 
-            SAFE_NEW(pBinder, CustomAssemblyBinder(interpreterRequired));
+            SAFE_NEW_CONSTR(pBinder, CustomAssemblyBinder(interpreterRequired));
             hr = pBinder->GetAppContext()->Init();
             if(SUCCEEDED(hr))
             {
