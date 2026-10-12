@@ -86,6 +86,11 @@ namespace System.Runtime.Loader
         }
 
         private AssemblyLoadContext(bool representsTPALoadContext, bool isCollectible, string? name, bool requiresInterpreter)
+            : this(representsTPALoadContext, isCollectible, name, requiresInterpreter, instructionLimit: 0)
+        {
+        }
+
+        private AssemblyLoadContext(bool representsTPALoadContext, bool isCollectible, string? name, bool requiresInterpreter, long instructionLimit)
         {
             // Initialize the VM side of AssemblyLoadContext if not already done.
             _isCollectible = isCollectible;
@@ -111,7 +116,9 @@ namespace System.Runtime.Loader
             {
                 try
                 {
-                    _nativeAssemblyLoadContext = InitializeInterpreterRequiredLoadContext(thisHandlePtr);
+                    _nativeAssemblyLoadContext = instructionLimit > 0
+                        ? InitializeInstructionMeteredLoadContext(thisHandlePtr, instructionLimit)
+                        : InitializeInterpreterRequiredLoadContext(thisHandlePtr);
                 }
                 catch
                 {

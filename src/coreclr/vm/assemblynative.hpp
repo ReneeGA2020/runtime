@@ -111,6 +111,10 @@ extern "C" void QCALLTYPE AssemblyNative_GetImageRuntimeVersion(QCall::AssemblyH
 
 extern "C" INT_PTR QCALLTYPE AssemblyNative_InitializeAssemblyLoadContext(INT_PTR ptrAssemblyLoadContext, BOOL fRepresentsTPALoadContext, BOOL fIsCollectible, QCallExceptionStatus* qcallError);
 extern "C" INT_PTR QCALLTYPE AssemblyNative_InitializeInterpreterRequiredLoadContext(INT_PTR ptrAssemblyLoadContext, QCallExceptionStatus* qcallError);
+extern "C" INT_PTR QCALLTYPE AssemblyNative_InitializeInstructionMeteredLoadContext(INT_PTR ptrAssemblyLoadContext, INT64 instructionLimit, QCallExceptionStatus* qcallError);
+extern "C" INT32 QCALLTYPE AssemblyNative_RuneCLRGetInstructionMeterVersion(QCallExceptionStatus* qcallError);
+extern "C" INT64 QCALLTYPE AssemblyNative_RuneCLRGetInstructionMeterRemaining(INT_PTR ptrNativeAssemblyBinder, QCallExceptionStatus* qcallError);
+extern "C" INT64 QCALLTYPE AssemblyNative_RuneCLRGetInstructionMeterExecuted(INT_PTR ptrNativeAssemblyBinder, QCallExceptionStatus* qcallError);
 extern "C" INT32 QCALLTYPE AssemblyNative_RuneCLRGetExecutionPolicyVersion(QCallExceptionStatus* qcallError);
 extern "C" INT32 QCALLTYPE AssemblyNative_RuneCLRGetExecutionPolicy(INT_PTR ptrNativeAssemblyBinder, QCallExceptionStatus* qcallError);
 

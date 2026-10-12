@@ -14,6 +14,8 @@
 #include "comdelegate.h"
 #include "gchelpers.inl"
 #include "arraynative.inl"
+#include "assemblybinder.h"
+#include "runeclrinstructionmeter.h"
 
 #ifdef TARGET_WASM
 extern "C" void SamplingProfiler_OnSamplepoint();
@@ -898,6 +900,23 @@ NOINLINE static void InterpThrow(InterpMethodContextFrame* pFrame, const int32_t
 #define NULL_CHECK(o) do { if ((o) == NULL) { INTERP_THROW(kNullReferenceException); } } while (0)
 #define INTERP_THROW(exType) InterpThrow(pFrame, ip, exType)
 
+// Private RuneCLR diagnostic accounting. This does not throw or terminate code.
+// Resolve the current definition owner at every actual dispatch rather than
+// retaining the preceding frame's owner across child/tail calls, EH or returns.
+// No managed roots, allocation, loader-allocator lookup or GC-triggering work.
+static FORCEINLINE void RuneCLRChargeCurrentInstruction(InterpMethodContextFrame* frame)
+{
+    LIMITED_METHOD_CONTRACT;
+    MethodDesc* method = frame->startIp->Method->methodHnd;
+    AssemblyBinder* binder = method->GetModule()->GetPEAssembly()->GetAssemblyBinder();
+    if (binder != nullptr)
+    {
+        RuneCLRInstructionMeter* meter = binder->GetRuneCLRInstructionMeter();
+        if (meter != nullptr)
+            meter->Charge();
+    }
+}
+
 // When enabled, each opcode dispatches directly to the next one via an indirect goto,
 // avoiding the overhead of the central switch dispatch.
 #if !defined(TARGET_WINDOWS) && !defined(TARGET_WASM) && !defined(DEBUG)
@@ -906,7 +925,7 @@ NOINLINE static void InterpThrow(InterpMethodContextFrame* pFrame, const int32_t
 
 #if USE_COMPUTED_GOTO
 #define INTOP_CASE(x) LABEL_ ## x:
-#define INTOP_DISPATCH(op) opcode = (uint32_t)(op); goto *s_dispatchTable[opcode]
+#define INTOP_DISPATCH(op) do { opcode = (uint32_t)(op); RuneCLRChargeCurrentInstruction(pFrame); goto *s_dispatchTable[opcode]; } while (0)
 #define INTOP_NEXT INTOP_DISPATCH(ip[0])
 #else
 #define INTOP_CASE(x) case x:
@@ -1534,6 +1553,8 @@ MAIN_LOOP:
 #else
             opcode = ip[0];
 SWITCH_OPCODE:
+            // Also covers debugger bypass dispatches that jump to this label.
+            RuneCLRChargeCurrentInstruction(pFrame);
             switch (opcode)
             {
 #endif // !USE_COMPUTED_GOTO

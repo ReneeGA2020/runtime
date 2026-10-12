@@ -13,6 +13,7 @@ class Assembly;
 class Module;
 class AssemblyLoaderAllocator;
 class AssemblySpec;
+class RuneCLRInstructionMeter;
 
 class AssemblyBinder
 {
@@ -35,6 +36,7 @@ public:
     // Private RuneCLR experiment: assigned before the binder can load any module.
     // No setter and no process-wide metadata registry.
     bool RuneCLRRequiresInterpreter() const { return m_runeCLRInterpreterRequired; }
+    virtual RuneCLRInstructionMeter* GetRuneCLRInstructionMeter() { return nullptr; }
 
     inline BINDER_SPACE::ApplicationContext* GetAppContext()
     {

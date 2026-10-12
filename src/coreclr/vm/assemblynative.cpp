@@ -1190,7 +1190,7 @@ extern "C" void QCALLTYPE AssemblyNative_GetImageRuntimeVersion(QCall::AssemblyH
 /*static*/
 
 static INT_PTR InitializeAssemblyLoadContextWorker(INT_PTR ptrAssemblyLoadContext, BOOL fRepresentsTPALoadContext,
-                                                  BOOL fIsCollectible, bool interpreterRequired)
+                                                  BOOL fIsCollectible, bool interpreterRequired, INT64 instructionLimit = 0)
 {
     STANDARD_VM_CONTRACT;
     INT_PTR ptrNativeAssemblyBinder = 0;
@@ -1239,7 +1239,7 @@ static INT_PTR InitializeAssemblyLoadContextWorker(INT_PTR ptrAssemblyLoadContex
             loaderAllocator->ActivateManagedTracking();
         }
 
-        IfFailThrow(CustomAssemblyBinder::SetupContext(pDefaultBinder, loaderAllocator, loaderAllocatorHandle, ptrAssemblyLoadContext, interpreterRequired, &pCustomBinder));
+        IfFailThrow(CustomAssemblyBinder::SetupContext(pDefaultBinder, loaderAllocator, loaderAllocatorHandle, ptrAssemblyLoadContext, interpreterRequired, instructionLimit, &pCustomBinder));
         ptrNativeAssemblyBinder = reinterpret_cast<INT_PTR>(pCustomBinder);
     }
     else
@@ -1279,6 +1279,66 @@ extern "C" INT_PTR QCALLTYPE AssemblyNative_InitializeInterpreterRequiredLoadCon
 #endif
     END_QCALL;
     return result;
+}
+
+extern "C" INT_PTR QCALLTYPE AssemblyNative_InitializeInstructionMeteredLoadContext(INT_PTR ptrAssemblyLoadContext, INT64 instructionLimit, QCallExceptionStatus* qcallError)
+{
+    QCALL_CONTRACT;
+    INT_PTR result = 0;
+    BEGIN_QCALL;
+    if (instructionLimit <= 0)
+        COMPlusThrow(kArgumentOutOfRangeException);
+#ifndef FEATURE_INTERPRETER
+    COMPlusThrowNonLocalized(kPlatformNotSupportedException, W("Instruction-metered load contexts are not supported by this runtime build."));
+#else
+    result = InitializeAssemblyLoadContextWorker(ptrAssemblyLoadContext, FALSE, TRUE, true, instructionLimit);
+#endif
+    END_QCALL;
+    return result;
+}
+
+extern "C" INT32 QCALLTYPE AssemblyNative_RuneCLRGetInstructionMeterVersion(QCallExceptionStatus* qcallError)
+{
+    QCALL_CONTRACT;
+    INT32 version = 0;
+    BEGIN_QCALL;
+#ifdef FEATURE_INTERPRETER
+    version = 1;
+#endif
+    END_QCALL;
+    return version;
+}
+
+extern "C" INT64 QCALLTYPE AssemblyNative_RuneCLRGetInstructionMeterRemaining(INT_PTR ptrNativeAssemblyBinder, QCallExceptionStatus* qcallError)
+{
+    QCALL_CONTRACT;
+    INT64 remaining = 0;
+    BEGIN_QCALL;
+    if (ptrNativeAssemblyBinder == 0)
+        COMPlusThrow(kInvalidOperationException);
+    AssemblyBinder* binder = reinterpret_cast<AssemblyBinder*>(ptrNativeAssemblyBinder);
+    RuneCLRInstructionMeter* meter = binder->GetRuneCLRInstructionMeter();
+    if (meter == nullptr)
+        COMPlusThrow(kInvalidOperationException);
+    remaining = meter->Remaining();
+    END_QCALL;
+    return remaining;
+}
+
+extern "C" INT64 QCALLTYPE AssemblyNative_RuneCLRGetInstructionMeterExecuted(INT_PTR ptrNativeAssemblyBinder, QCallExceptionStatus* qcallError)
+{
+    QCALL_CONTRACT;
+    INT64 executed = 0;
+    BEGIN_QCALL;
+    if (ptrNativeAssemblyBinder == 0)
+        COMPlusThrow(kInvalidOperationException);
+    AssemblyBinder* binder = reinterpret_cast<AssemblyBinder*>(ptrNativeAssemblyBinder);
+    RuneCLRInstructionMeter* meter = binder->GetRuneCLRInstructionMeter();
+    if (meter == nullptr)
+        COMPlusThrow(kInvalidOperationException);
+    executed = meter->Executed();
+    END_QCALL;
+    return executed;
 }
 
 extern "C" INT32 QCALLTYPE AssemblyNative_RuneCLRGetExecutionPolicyVersion(QCallExceptionStatus* qcallError)

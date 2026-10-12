@@ -24,6 +24,44 @@ namespace System.Runtime.Loader
 
         private static int RuneCLR_GetExecutionPolicyVersion() => RuneCLR_GetExecutionPolicyVersionNative();
 
+        // Diagnostic accounting only: exhaustion does not interrupt interpreted execution.
+        private static AssemblyLoadContext RuneCLR_CreateInstructionMetered(
+            string name, Func<AssemblyLoadContext, AssemblyName, Assembly?> managedResolver, long limit)
+        {
+            ArgumentNullException.ThrowIfNull(name);
+            ArgumentNullException.ThrowIfNull(managedResolver);
+            ArgumentOutOfRangeException.ThrowIfNegativeOrZero(limit);
+            if (RuneCLR_GetInstructionMeterVersion() != 1)
+                throw new PlatformNotSupportedException("The runtime cannot create an instruction-metered load context.");
+            return new RuneCLRInterpreterLoadContext(name, managedResolver, limit);
+        }
+
+        private static int RuneCLR_GetInstructionMeterVersion() => RuneCLR_GetInstructionMeterVersionNative();
+
+        private long RuneCLR_GetInstructionMeterRemaining()
+        {
+            lock (_unloadLock)
+            {
+                VerifyIsAlive();
+                long value = RuneCLR_GetInstructionMeterRemainingNative(_nativeAssemblyLoadContext);
+                GC.KeepAlive(this);
+                return value;
+            }
+        }
+
+        private long RuneCLR_GetInstructionMeterExecuted()
+        {
+            lock (_unloadLock)
+            {
+                VerifyIsAlive();
+                long value = RuneCLR_GetInstructionMeterExecutedNative(_nativeAssemblyLoadContext);
+                GC.KeepAlive(this);
+                return value;
+            }
+        }
+
+        private bool RuneCLR_GetInstructionMeterExhausted() => RuneCLR_GetInstructionMeterRemaining() == 0;
+
         private int RuneCLR_GetExecutionPolicy()
         {
             lock (_unloadLock)
@@ -46,6 +84,13 @@ namespace System.Runtime.Loader
                 _managedResolver = managedResolver;
             }
 
+            internal RuneCLRInterpreterLoadContext(
+                string name, Func<AssemblyLoadContext, AssemblyName, Assembly?> managedResolver, long instructionLimit)
+                : base(false, true, name, requiresInterpreter: true, instructionLimit)
+            {
+                _managedResolver = managedResolver;
+            }
+
             protected override Assembly? Load(AssemblyName assemblyName) => _managedResolver(this, assemblyName);
 
             protected override IntPtr LoadUnmanagedDll(string unmanagedDllName) =>
@@ -55,6 +100,22 @@ namespace System.Runtime.Loader
         [ErrorHandler(typeof(QCallExceptionStatusMarshaller), ErrorLocation.HiddenLastParameter)]
         [LibraryImport(RuntimeHelpers.QCall, EntryPoint = "AssemblyNative_InitializeInterpreterRequiredLoadContext")]
         private static partial IntPtr InitializeInterpreterRequiredLoadContext(IntPtr ptrAssemblyLoadContext);
+
+        [ErrorHandler(typeof(QCallExceptionStatusMarshaller), ErrorLocation.HiddenLastParameter)]
+        [LibraryImport(RuntimeHelpers.QCall, EntryPoint = "AssemblyNative_InitializeInstructionMeteredLoadContext")]
+        private static partial IntPtr InitializeInstructionMeteredLoadContext(IntPtr ptrAssemblyLoadContext, long instructionLimit);
+
+        [ErrorHandler(typeof(QCallExceptionStatusMarshaller), ErrorLocation.HiddenLastParameter)]
+        [LibraryImport(RuntimeHelpers.QCall, EntryPoint = "AssemblyNative_RuneCLRGetInstructionMeterVersion")]
+        private static partial int RuneCLR_GetInstructionMeterVersionNative();
+
+        [ErrorHandler(typeof(QCallExceptionStatusMarshaller), ErrorLocation.HiddenLastParameter)]
+        [LibraryImport(RuntimeHelpers.QCall, EntryPoint = "AssemblyNative_RuneCLRGetInstructionMeterRemaining")]
+        private static partial long RuneCLR_GetInstructionMeterRemainingNative(IntPtr ptrNativeAssemblyBinder);
+
+        [ErrorHandler(typeof(QCallExceptionStatusMarshaller), ErrorLocation.HiddenLastParameter)]
+        [LibraryImport(RuntimeHelpers.QCall, EntryPoint = "AssemblyNative_RuneCLRGetInstructionMeterExecuted")]
+        private static partial long RuneCLR_GetInstructionMeterExecutedNative(IntPtr ptrNativeAssemblyBinder);
 
         [ErrorHandler(typeof(QCallExceptionStatusMarshaller), ErrorLocation.HiddenLastParameter)]
         [LibraryImport(RuntimeHelpers.QCall, EntryPoint = "AssemblyNative_RuneCLRGetExecutionPolicyVersion")]

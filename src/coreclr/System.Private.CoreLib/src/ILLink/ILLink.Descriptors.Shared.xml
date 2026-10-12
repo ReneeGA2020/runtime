@@ -5,6 +5,11 @@
       <method name="RuneCLR_CreateInterpreterRequired" />
       <method name="RuneCLR_GetExecutionPolicyVersion" />
       <method name="RuneCLR_GetExecutionPolicy" />
+      <method name="RuneCLR_CreateInstructionMetered" />
+      <method name="RuneCLR_GetInstructionMeterVersion" />
+      <method name="RuneCLR_GetInstructionMeterRemaining" />
+      <method name="RuneCLR_GetInstructionMeterExecuted" />
+      <method name="RuneCLR_GetInstructionMeterExhausted" />
     </type>
     <type fullname="System.GC">
       <!-- Methods are used to register and unregister frozen segments. They are private and experimental. -->

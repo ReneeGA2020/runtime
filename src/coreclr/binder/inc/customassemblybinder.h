@@ -10,6 +10,8 @@
 
 #if !defined(DACCESS_COMPILE)
 
+#include "runeclrinstructionmeter.h"
+
 class AssemblyLoaderAllocator;
 class PEImage;
 
@@ -26,6 +28,10 @@ public:
         BINDER_SPACE::Assembly** ppAssembly, SString* pDiagnosticInfo = NULL) override;
 
     AssemblyLoaderAllocator* GetLoaderAllocator() override;
+    RuneCLRInstructionMeter* GetRuneCLRInstructionMeter() override
+    {
+        return m_runeCLRInstructionMeter.Enabled() ? &m_runeCLRInstructionMeter : nullptr;
+    }
 
     bool IsDefault() override
     {
@@ -37,13 +43,14 @@ public:
     // Class functions
     //-------------------------------------------------------------------------
 
-    explicit CustomAssemblyBinder(bool interpreterRequired = false);
+    explicit CustomAssemblyBinder(bool interpreterRequired = false, INT64 instructionLimit = 0);
 
     static HRESULT SetupContext(DefaultAssemblyBinder *pDefaultBinder,
                                 AssemblyLoaderAllocator* pLoaderAllocator,
                                 void* loaderAllocatorHandle,
                                 UINT_PTR ptrAssemblyLoadContext,
                                 bool interpreterRequired,
+                                INT64 instructionLimit,
                                 CustomAssemblyBinder **ppBindContext);
 
     void PrepareForLoadContextRelease(INT_PTR ptrManagedStrongAssemblyLoadContext);
@@ -62,6 +69,7 @@ private:
 
     AssemblyLoaderAllocator* m_pAssemblyLoaderAllocator;
     void* m_loaderAllocatorHandle;
+    RuneCLRInstructionMeter m_runeCLRInstructionMeter;
 };
 
 #endif // !defined(DACCESS_COMPILE)
