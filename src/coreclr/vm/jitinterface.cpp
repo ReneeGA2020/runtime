@@ -11807,6 +11807,23 @@ LPVOID CEEInfo::GetCookieForInterpreterCalliSig(CORINFO_SIG_INFO* szMetaSig)
 
 #ifdef FEATURE_INTERPRETER
 
+// Define this out of line: VM/DAC precompiled headers can include
+// jitinterface.h while MethodDesc is only forward declared.
+CInterpreterJitInfo::CInterpreterJitInfo(PrepareCodeConfig* config, MethodDesc* fd,
+                                       COR_ILMETHOD_DECODER* header, EECodeGenManager* jm)
+    : CEECodeGenInfo(config, fd, header, jm)
+{
+    CONTRACTL
+    {
+        NOTHROW;
+        GC_NOTRIGGER;
+        MODE_ANY;
+    } CONTRACTL_END;
+    // Base construction has already computed the normal compilation flags.
+    if (fd->RequiresInterpreterBody())
+        getJitFlagsInternal()->Set(CORJIT_FLAGS::CORJIT_FLAG_INTERPRET_REQUIRED);
+}
+
 // Forward declare the function for mapping MetaSig to a cookie.
 InterpreterCalliCookie GetCookieForCalliSig(MetaSig metaSig, MethodDesc *pContextMD);
 

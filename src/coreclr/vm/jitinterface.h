@@ -905,19 +905,7 @@ public:
     // ICorJitInfo stuff
 
     CInterpreterJitInfo(PrepareCodeConfig* config, MethodDesc* fd, COR_ILMETHOD_DECODER* header,
-                        EECodeGenManager* jm)
-        : CEECodeGenInfo(config, fd, header, jm)
-    {
-        CONTRACTL
-        {
-            NOTHROW;
-            GC_NOTRIGGER;
-            MODE_ANY;
-        } CONTRACTL_END;
-        // Base construction has already computed the normal compilation flags.
-        if (fd->RequiresInterpreterBody())
-            getJitFlagsInternal()->Set(CORJIT_FLAGS::CORJIT_FLAG_INTERPRET_REQUIRED);
-    }
+                        EECodeGenManager* jm);
 
     void allocMem(AllocMemArgs *pArgs) override;
     void * allocGCInfo(size_t  size) override;
