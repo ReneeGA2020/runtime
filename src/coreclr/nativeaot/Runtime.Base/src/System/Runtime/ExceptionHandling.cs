@@ -1025,6 +1025,13 @@ namespace System.Runtime
             pHandler = null;
             tryRegionIdx = MaxTryRegionIdx;
 
+#if !NATIVEAOT
+            // A terminal definition owner cannot select an author catch/filter.
+            // Keep the original EH entries and indices for second-pass cleanup.
+            if (InternalCalls.RuneCLRIsTerminatedFrameOwner(ref frameIter))
+                return false;
+#endif
+
             EHEnum ehEnum;
             MethodRegionInfo methodRegionInfo;
             if (!InternalCalls.RhpEHEnumInitFromStackFrameIterator(ref frameIter, out methodRegionInfo, &ehEnum))
@@ -1077,6 +1084,11 @@ namespace System.Runtime
 
                 // Found a containing clause. Because of the order of the clauses, we know this is the
                 // most containing.
+#if !NATIVEAOT
+                if (InternalCalls.RuneCLRIsTerminatedFrameOwner(ref frameIter))
+                    return false;
+#endif
+
                 if (clauseKind == RhEHClauseKind.RH_EH_CLAUSE_TYPED)
                 {
                     if (ShouldTypedClauseCatchThisException(exception, (MethodTable*)ehClause._pTargetType, !frameIter.IsRuntimeWrappedExceptions))
@@ -1104,6 +1116,10 @@ namespace System.Runtime
 #else // NATIVEAOT
                     shouldInvokeHandler =
                         InternalCalls.RhpCallFilterFunclet(ObjectHandleOnStack.Create(ref exception), pFilterFunclet, frameIter.RegisterSet);
+                    // The filter itself can spend the last author instruction.
+                    // A true result must not revive a now-terminal context.
+                    if (InternalCalls.RuneCLRIsTerminatedFrameOwner(ref frameIter))
+                        return false;
 #endif // NATIVEAOT
 
                     if (shouldInvokeHandler)

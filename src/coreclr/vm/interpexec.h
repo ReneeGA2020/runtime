@@ -26,6 +26,7 @@ struct StackVal
 
 typedef DPTR(struct InterpMethodContextFrame) PTR_InterpMethodContextFrame;
 class InterpreterFrame;
+class RuneCLRInstructionMeter;
 
 struct InterpMethodContextFrame
 {
@@ -94,6 +95,11 @@ struct InterpThreadContext
     }
 #endif // DEBUGGING_SUPPORTED
 
+    // Append after all existing fields: assembly stubs use fixed offsets for
+    // pStackPointer. Native-only identity scoped by an active EH cleanup funclet;
+    // the owning binder remains alive with that active definition frame.
+    RuneCLRInstructionMeter* runeclrCleanupOwner;
+
     InterpThreadContext();
     ~InterpThreadContext();
 };
@@ -106,6 +112,8 @@ struct ExceptionClauseArgs
     InterpMethodContextFrame *pFrame;
     // Set to true if the exception clause is a filter
     bool isFilter;
+    // Finally/fault, distinct from an author catch and from a filter.
+    bool isCleanup;
     // The exception object passed to the filter or catch clause
     OBJECTREF throwable;
 };

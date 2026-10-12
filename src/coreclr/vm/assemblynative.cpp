@@ -1190,7 +1190,8 @@ extern "C" void QCALLTYPE AssemblyNative_GetImageRuntimeVersion(QCall::AssemblyH
 /*static*/
 
 static INT_PTR InitializeAssemblyLoadContextWorker(INT_PTR ptrAssemblyLoadContext, BOOL fRepresentsTPALoadContext,
-                                                  BOOL fIsCollectible, bool interpreterRequired, INT64 instructionLimit = 0)
+                                                  BOOL fIsCollectible, bool interpreterRequired, INT64 instructionLimit = 0,
+                                                  bool terminalPrototype = false, INT64 cleanupLimit = 0)
 {
     STANDARD_VM_CONTRACT;
     INT_PTR ptrNativeAssemblyBinder = 0;
@@ -1239,7 +1240,7 @@ static INT_PTR InitializeAssemblyLoadContextWorker(INT_PTR ptrAssemblyLoadContex
             loaderAllocator->ActivateManagedTracking();
         }
 
-        IfFailThrow(CustomAssemblyBinder::SetupContext(pDefaultBinder, loaderAllocator, loaderAllocatorHandle, ptrAssemblyLoadContext, interpreterRequired, instructionLimit, &pCustomBinder));
+        IfFailThrow(CustomAssemblyBinder::SetupContext(pDefaultBinder, loaderAllocator, loaderAllocatorHandle, ptrAssemblyLoadContext, interpreterRequired, instructionLimit, terminalPrototype, cleanupLimit, &pCustomBinder));
         ptrNativeAssemblyBinder = reinterpret_cast<INT_PTR>(pCustomBinder);
     }
     else
@@ -1295,6 +1296,86 @@ extern "C" INT_PTR QCALLTYPE AssemblyNative_InitializeInstructionMeteredLoadCont
 #endif
     END_QCALL;
     return result;
+}
+
+extern "C" INT_PTR QCALLTYPE AssemblyNative_InitializeTerminalPrototypeLoadContext(INT_PTR ptrAssemblyLoadContext, INT64 executionLimit, INT64 cleanupLimit, QCallExceptionStatus* qcallError)
+{
+    QCALL_CONTRACT;
+    INT_PTR result = 0;
+    BEGIN_QCALL;
+    if (executionLimit <= 0 || cleanupLimit <= 0)
+        COMPlusThrow(kArgumentOutOfRangeException);
+#ifndef FEATURE_INTERPRETER
+    COMPlusThrowNonLocalized(kPlatformNotSupportedException, W("Terminal prototype load contexts are not supported by this runtime build."));
+#else
+    result = InitializeAssemblyLoadContextWorker(ptrAssemblyLoadContext, FALSE, TRUE, true, executionLimit, true, cleanupLimit);
+#endif
+    END_QCALL;
+    return result;
+}
+
+extern "C" INT32 QCALLTYPE AssemblyNative_RuneCLRGetTerminalPrototypeVersion(QCallExceptionStatus* qcallError)
+{
+    QCALL_CONTRACT;
+    INT32 version = 0;
+    BEGIN_QCALL;
+#ifdef FEATURE_INTERPRETER
+    version = 1;
+#endif
+    END_QCALL;
+    return version;
+}
+
+static RuneCLRInstructionMeter* GetTerminalPrototypeMeterForQuery(INT_PTR ptrNativeAssemblyBinder)
+{
+    STANDARD_VM_CONTRACT;
+    if (ptrNativeAssemblyBinder == 0)
+        COMPlusThrow(kInvalidOperationException);
+    AssemblyBinder* binder = reinterpret_cast<AssemblyBinder*>(ptrNativeAssemblyBinder);
+    RuneCLRInstructionMeter* meter = binder->GetRuneCLRInstructionMeter();
+    if (meter == nullptr || !meter->IsTerminalPrototype())
+        COMPlusThrow(kInvalidOperationException);
+    return meter;
+}
+
+extern "C" INT32 QCALLTYPE AssemblyNative_RuneCLRGetTerminalPrototypeReason(INT_PTR ptrNativeAssemblyBinder, QCallExceptionStatus* qcallError)
+{
+    QCALL_CONTRACT;
+    INT32 reason = 0;
+    BEGIN_QCALL;
+    reason = GetTerminalPrototypeMeterForQuery(ptrNativeAssemblyBinder)->Reason();
+    END_QCALL;
+    return reason;
+}
+
+extern "C" INT32 QCALLTYPE AssemblyNative_RuneCLRGetTerminalPrototypePhase(INT_PTR ptrNativeAssemblyBinder, QCallExceptionStatus* qcallError)
+{
+    QCALL_CONTRACT;
+    INT32 phase = 0;
+    BEGIN_QCALL;
+    phase = GetTerminalPrototypeMeterForQuery(ptrNativeAssemblyBinder)->Phase();
+    END_QCALL;
+    return phase;
+}
+
+extern "C" INT64 QCALLTYPE AssemblyNative_RuneCLRGetTerminalPrototypeCleanupRemaining(INT_PTR ptrNativeAssemblyBinder, QCallExceptionStatus* qcallError)
+{
+    QCALL_CONTRACT;
+    INT64 remaining = 0;
+    BEGIN_QCALL;
+    remaining = GetTerminalPrototypeMeterForQuery(ptrNativeAssemblyBinder)->CleanupRemaining();
+    END_QCALL;
+    return remaining;
+}
+
+extern "C" INT64 QCALLTYPE AssemblyNative_RuneCLRGetTerminalPrototypeCleanupExecuted(INT_PTR ptrNativeAssemblyBinder, QCallExceptionStatus* qcallError)
+{
+    QCALL_CONTRACT;
+    INT64 executed = 0;
+    BEGIN_QCALL;
+    executed = GetTerminalPrototypeMeterForQuery(ptrNativeAssemblyBinder)->CleanupExecuted();
+    END_QCALL;
+    return executed;
 }
 
 extern "C" INT32 QCALLTYPE AssemblyNative_RuneCLRGetInstructionMeterVersion(QCallExceptionStatus* qcallError)

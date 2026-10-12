@@ -43,7 +43,8 @@ public:
     // Class functions
     //-------------------------------------------------------------------------
 
-    explicit CustomAssemblyBinder(bool interpreterRequired = false, INT64 instructionLimit = 0);
+    explicit CustomAssemblyBinder(bool interpreterRequired = false, INT64 instructionLimit = 0,
+                                  bool terminalPrototype = false, INT64 cleanupLimit = 0);
 
     static HRESULT SetupContext(DefaultAssemblyBinder *pDefaultBinder,
                                 AssemblyLoaderAllocator* pLoaderAllocator,
@@ -51,6 +52,8 @@ public:
                                 UINT_PTR ptrAssemblyLoadContext,
                                 bool interpreterRequired,
                                 INT64 instructionLimit,
+                                bool terminalPrototype,
+                                INT64 cleanupLimit,
                                 CustomAssemblyBinder **ppBindContext);
 
     void PrepareForLoadContextRelease(INT_PTR ptrManagedStrongAssemblyLoadContext);

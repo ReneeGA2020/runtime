@@ -18,6 +18,8 @@
 
 #ifdef FEATURE_INTERPRETER
 #include "interpexec.h"
+#include "assemblybinder.h"
+#include "runeclrinstructionmeter.h"
 #endif // FEATURE_INTERPRETER
 
 #include "exinfo.h"
@@ -1903,7 +1905,7 @@ extern "C" DWORD_PTR STDCALL CallInterpreterFuncletWorker(OBJECTREF throwable, v
 
     InterpMethodContextFrame *pOriginalFrame = (InterpMethodContextFrame*)GetRegdisplaySP(pRD);
 
-    StackVal retVal;
+    StackVal retVal = {};
 
     frames.interpMethodContextFrame.startIp = pOriginalFrame->startIp;
     frames.interpMethodContextFrame.pStack = isFilter ? sp : pOriginalFrame->pStack;
@@ -1913,7 +1915,27 @@ extern "C" DWORD_PTR STDCALL CallInterpreterFuncletWorker(OBJECTREF throwable, v
     exceptionClauseArgs.ip = (const int32_t *)pHandler;
     exceptionClauseArgs.pFrame = pOriginalFrame;
     exceptionClauseArgs.isFilter = isFilter;
+    exceptionClauseArgs.isCleanup = !isFilter && IsFaultOrFinally(&pExInfo->m_CurrentClause);
     exceptionClauseArgs.throwable = throwable;
+
+    struct RuneCLRCleanupScope
+    {
+        InterpThreadContext* context;
+        RuneCLRInstructionMeter* previous;
+        RuneCLRCleanupScope(InterpThreadContext* context, InterpMethodContextFrame* frame, bool isCleanup)
+            : context(context), previous(context->runeclrCleanupOwner)
+        {
+            if (isCleanup)
+            {
+                MethodDesc* method = frame->startIp->Method->methodHnd;
+                AssemblyBinder* binder = method->GetModule()->GetPEAssembly()->GetAssemblyBinder();
+                RuneCLRInstructionMeter* meter = binder == nullptr ? nullptr : binder->GetRuneCLRInstructionMeter();
+                if (meter != nullptr && meter->IsTerminalPrototype())
+                    context->runeclrCleanupOwner = meter;
+            }
+        }
+        ~RuneCLRCleanupScope() { context->runeclrCleanupOwner = previous; }
+    } cleanupScope(threadContext, pOriginalFrame, exceptionClauseArgs.isCleanup);
 
     GCPROTECT_BEGIN(exceptionClauseArgs.throwable);
     InterpExecMethod(&frames.interpreterFrame, &frames.interpMethodContextFrame, threadContext, &exceptionClauseArgs);

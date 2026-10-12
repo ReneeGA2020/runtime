@@ -38,6 +38,66 @@ namespace System.Runtime.Loader
 
         private static int RuneCLR_GetInstructionMeterVersion() => RuneCLR_GetInstructionMeterVersionNative();
 
+        // Private opt-in prototype only; this version is not a production termination capability.
+        private static AssemblyLoadContext RuneCLR_CreateTerminalPrototype(
+            string name, Func<AssemblyLoadContext, AssemblyName, Assembly?> managedResolver, long executionLimit, long cleanupLimit)
+        {
+            ArgumentNullException.ThrowIfNull(name);
+            ArgumentNullException.ThrowIfNull(managedResolver);
+            ArgumentOutOfRangeException.ThrowIfNegativeOrZero(executionLimit);
+            ArgumentOutOfRangeException.ThrowIfNegativeOrZero(cleanupLimit);
+            if (RuneCLR_GetTerminalPrototypeVersion() != 1)
+                throw new PlatformNotSupportedException("The runtime cannot create a terminal prototype load context.");
+            return new RuneCLRInterpreterLoadContext(name, managedResolver, executionLimit, cleanupLimit);
+        }
+
+        private static int RuneCLR_GetTerminalPrototypeVersion() => RuneCLR_GetTerminalPrototypeVersionNative();
+        private bool RuneCLR_GetTerminalPrototypeIsTerminated() => RuneCLR_GetTerminalPrototypeReason() != 0;
+
+        private int RuneCLR_GetTerminalPrototypeReason()
+        {
+            lock (_unloadLock)
+            {
+                VerifyIsAlive();
+                int value = RuneCLR_GetTerminalPrototypeReasonNative(_nativeAssemblyLoadContext);
+                GC.KeepAlive(this);
+                return value;
+            }
+        }
+
+        private int RuneCLR_GetTerminalPrototypePhase()
+        {
+            lock (_unloadLock)
+            {
+                VerifyIsAlive();
+                int value = RuneCLR_GetTerminalPrototypePhaseNative(_nativeAssemblyLoadContext);
+                GC.KeepAlive(this);
+                return value;
+            }
+        }
+
+        private long RuneCLR_GetTerminalPrototypeCleanupRemaining()
+        {
+            lock (_unloadLock)
+            {
+                VerifyIsAlive();
+                long value = RuneCLR_GetTerminalPrototypeCleanupRemainingNative(_nativeAssemblyLoadContext);
+                GC.KeepAlive(this);
+                return value;
+            }
+        }
+
+        private long RuneCLR_GetTerminalPrototypeCleanupExecuted()
+        {
+            lock (_unloadLock)
+            {
+                VerifyIsAlive();
+                long value = RuneCLR_GetTerminalPrototypeCleanupExecutedNative(_nativeAssemblyLoadContext);
+                GC.KeepAlive(this);
+                return value;
+            }
+        }
+
         private long RuneCLR_GetInstructionMeterRemaining()
         {
             lock (_unloadLock)
@@ -91,6 +151,13 @@ namespace System.Runtime.Loader
                 _managedResolver = managedResolver;
             }
 
+            internal RuneCLRInterpreterLoadContext(
+                string name, Func<AssemblyLoadContext, AssemblyName, Assembly?> managedResolver, long executionLimit, long cleanupLimit)
+                : base(false, true, name, requiresInterpreter: true, executionLimit, terminalPrototype: true, cleanupLimit)
+            {
+                _managedResolver = managedResolver;
+            }
+
             protected override Assembly? Load(AssemblyName assemblyName) => _managedResolver(this, assemblyName);
 
             protected override IntPtr LoadUnmanagedDll(string unmanagedDllName) =>
@@ -104,6 +171,30 @@ namespace System.Runtime.Loader
         [ErrorHandler(typeof(QCallExceptionStatusMarshaller), ErrorLocation.HiddenLastParameter)]
         [LibraryImport(RuntimeHelpers.QCall, EntryPoint = "AssemblyNative_InitializeInstructionMeteredLoadContext")]
         private static partial IntPtr InitializeInstructionMeteredLoadContext(IntPtr ptrAssemblyLoadContext, long instructionLimit);
+
+        [ErrorHandler(typeof(QCallExceptionStatusMarshaller), ErrorLocation.HiddenLastParameter)]
+        [LibraryImport(RuntimeHelpers.QCall, EntryPoint = "AssemblyNative_InitializeTerminalPrototypeLoadContext")]
+        private static partial IntPtr InitializeTerminalPrototypeLoadContext(IntPtr ptrAssemblyLoadContext, long executionLimit, long cleanupLimit);
+
+        [ErrorHandler(typeof(QCallExceptionStatusMarshaller), ErrorLocation.HiddenLastParameter)]
+        [LibraryImport(RuntimeHelpers.QCall, EntryPoint = "AssemblyNative_RuneCLRGetTerminalPrototypeVersion")]
+        private static partial int RuneCLR_GetTerminalPrototypeVersionNative();
+
+        [ErrorHandler(typeof(QCallExceptionStatusMarshaller), ErrorLocation.HiddenLastParameter)]
+        [LibraryImport(RuntimeHelpers.QCall, EntryPoint = "AssemblyNative_RuneCLRGetTerminalPrototypeReason")]
+        private static partial int RuneCLR_GetTerminalPrototypeReasonNative(IntPtr ptrNativeAssemblyBinder);
+
+        [ErrorHandler(typeof(QCallExceptionStatusMarshaller), ErrorLocation.HiddenLastParameter)]
+        [LibraryImport(RuntimeHelpers.QCall, EntryPoint = "AssemblyNative_RuneCLRGetTerminalPrototypePhase")]
+        private static partial int RuneCLR_GetTerminalPrototypePhaseNative(IntPtr ptrNativeAssemblyBinder);
+
+        [ErrorHandler(typeof(QCallExceptionStatusMarshaller), ErrorLocation.HiddenLastParameter)]
+        [LibraryImport(RuntimeHelpers.QCall, EntryPoint = "AssemblyNative_RuneCLRGetTerminalPrototypeCleanupRemaining")]
+        private static partial long RuneCLR_GetTerminalPrototypeCleanupRemainingNative(IntPtr ptrNativeAssemblyBinder);
+
+        [ErrorHandler(typeof(QCallExceptionStatusMarshaller), ErrorLocation.HiddenLastParameter)]
+        [LibraryImport(RuntimeHelpers.QCall, EntryPoint = "AssemblyNative_RuneCLRGetTerminalPrototypeCleanupExecuted")]
+        private static partial long RuneCLR_GetTerminalPrototypeCleanupExecutedNative(IntPtr ptrNativeAssemblyBinder);
 
         [ErrorHandler(typeof(QCallExceptionStatusMarshaller), ErrorLocation.HiddenLastParameter)]
         [LibraryImport(RuntimeHelpers.QCall, EntryPoint = "AssemblyNative_RuneCLRGetInstructionMeterVersion")]

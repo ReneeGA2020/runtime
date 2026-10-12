@@ -10,6 +10,13 @@
       <method name="RuneCLR_GetInstructionMeterRemaining" />
       <method name="RuneCLR_GetInstructionMeterExecuted" />
       <method name="RuneCLR_GetInstructionMeterExhausted" />
+      <method name="RuneCLR_CreateTerminalPrototype" />
+      <method name="RuneCLR_GetTerminalPrototypeVersion" />
+      <method name="RuneCLR_GetTerminalPrototypeIsTerminated" />
+      <method name="RuneCLR_GetTerminalPrototypeReason" />
+      <method name="RuneCLR_GetTerminalPrototypePhase" />
+      <method name="RuneCLR_GetTerminalPrototypeCleanupRemaining" />
+      <method name="RuneCLR_GetTerminalPrototypeCleanupExecuted" />
     </type>
     <type fullname="System.GC">
       <!-- Methods are used to register and unregister frozen segments. They are private and experimental. -->

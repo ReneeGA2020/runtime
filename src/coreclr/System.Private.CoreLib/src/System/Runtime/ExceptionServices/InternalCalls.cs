@@ -51,6 +51,13 @@ namespace System.Runtime.ExceptionServices
 
         [StackTraceHidden]
         [DebuggerHidden]
+        [LibraryImport(RuntimeHelpers.QCall, EntryPoint = "RuneCLRIsTerminatedFrameOwner")]
+        [SuppressGCTransition]
+        [return: MarshalAs(UnmanagedType.U1)]
+        internal static partial bool RuneCLRIsTerminatedFrameOwner(ref StackFrameIterator pFrameIter);
+
+        [StackTraceHidden]
+        [DebuggerHidden]
         [ErrorHandler(typeof(QCallExceptionStatusMarshaller), ErrorLocation.HiddenLastParameter)]
         [LibraryImport(RuntimeHelpers.QCall, EntryPoint = "EHEnumNext")]
         [return: MarshalAs(UnmanagedType.U1)]

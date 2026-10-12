@@ -17,6 +17,10 @@
 #include "exceptionhandlingqcalls.h"
 #include "exinfo.h"
 #include "configuration.h"
+#ifdef FEATURE_INTERPRETER
+#include "assemblybinder.h"
+#include "runeclrinstructionmeter.h"
+#endif
 
 extern MethodDesc* g_pThreadStartCallbackMethodDesc;
 extern MethodDesc* g_pGCRunFinalizersMethodDesc;
@@ -3419,6 +3423,30 @@ struct ExtendedEHClauseEnumerator : EH_CLAUSE_ENUMERATOR
     StackFrameIterator *pFrameIter;
     unsigned EHCount;
 };
+
+// Query the currently enumerated definition, not the throwing object's type or
+// a thread-local owner. A terminal author frame cannot recover by catching a
+// different exception raised during cleanup. EH clause enumeration is unchanged.
+extern "C" CLR_BOOL QCALLTYPE RuneCLRIsTerminatedFrameOwner(StackFrameIterator *pFrameIter)
+{
+    QCALL_CONTRACT_NO_GC_TRANSITION;
+
+#ifdef FEATURE_INTERPRETER
+    MethodDesc* method = pFrameIter->m_crawl.GetFunction();
+    if (method != nullptr)
+    {
+        AssemblyBinder* binder = method->GetModule()->GetPEAssembly()->GetAssemblyBinder();
+        if (binder != nullptr)
+        {
+            RuneCLRInstructionMeter* meter = binder->GetRuneCLRInstructionMeter();
+            if (meter != nullptr && meter->IsTerminated())
+                return TRUE;
+        }
+    }
+#endif
+
+    return FALSE;
+}
 
 extern "C" CLR_BOOL QCALLTYPE EHEnumInitFromStackFrameIterator(StackFrameIterator *pFrameIter, IJitManager::MethodRegionInfo* pMethodRegionInfo, EH_CLAUSE_ENUMERATOR * pEHEnum)
 {

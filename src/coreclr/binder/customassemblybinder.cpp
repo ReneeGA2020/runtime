@@ -166,6 +166,8 @@ HRESULT CustomAssemblyBinder::SetupContext(DefaultAssemblyBinder *pDefaultBinder
                                            UINT_PTR ptrAssemblyLoadContext,
                                            bool interpreterRequired,
                                            INT64 instructionLimit,
+                                           bool terminalPrototype,
+                                           INT64 cleanupLimit,
                                            CustomAssemblyBinder **ppBindContext)
 {
     HRESULT hr = E_FAIL;
@@ -175,7 +177,7 @@ HRESULT CustomAssemblyBinder::SetupContext(DefaultAssemblyBinder *pDefaultBinder
         {
             NewHolder<CustomAssemblyBinder> pBinder;
 
-            SAFE_NEW_CONSTR(pBinder, CustomAssemblyBinder(interpreterRequired, instructionLimit));
+            SAFE_NEW_CONSTR(pBinder, CustomAssemblyBinder(interpreterRequired, instructionLimit, terminalPrototype, cleanupLimit));
             hr = pBinder->GetAppContext()->Init();
             if(SUCCEEDED(hr))
             {
@@ -246,8 +248,8 @@ void CustomAssemblyBinder::PrepareForLoadContextRelease(INT_PTR ptrManagedStrong
     m_loaderAllocatorHandle = NULL;
 }
 
-CustomAssemblyBinder::CustomAssemblyBinder(bool interpreterRequired, INT64 instructionLimit)
-    : AssemblyBinder(interpreterRequired), m_runeCLRInstructionMeter(instructionLimit)
+CustomAssemblyBinder::CustomAssemblyBinder(bool interpreterRequired, INT64 instructionLimit, bool terminalPrototype, INT64 cleanupLimit)
+    : AssemblyBinder(interpreterRequired), m_runeCLRInstructionMeter(instructionLimit, terminalPrototype, cleanupLimit)
 {
     m_pDefaultBinder = NULL;
     m_ptrManagedStrongAssemblyLoadContext = (INT_PTR)NULL;

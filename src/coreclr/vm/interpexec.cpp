@@ -772,6 +772,7 @@ typedef void (*HELPER_FTN_V_PP)(void*, void*);
 
 InterpThreadContext::InterpThreadContext()
 {
+    runeclrCleanupOwner = nullptr;
     pStackStart = pStackPointer = (int8_t*)VMToOSInterface::AlignedAllocate(INTERP_STACK_SIZE, INTERP_STACK_SIZE);
     pStackEnd = pStackStart + INTERP_STACK_SIZE;
 #ifdef DEBUGGING_SUPPORTED
@@ -900,11 +901,12 @@ NOINLINE static void InterpThrow(InterpMethodContextFrame* pFrame, const int32_t
 #define NULL_CHECK(o) do { if ((o) == NULL) { INTERP_THROW(kNullReferenceException); } } while (0)
 #define INTERP_THROW(exType) InterpThrow(pFrame, ip, exType)
 
-// Private RuneCLR diagnostic accounting. This does not throw or terminate code.
+// Private opt-in accounting and terminal prototype. The original diagnostic
+// factory retains its non-throwing semantics.
 // Resolve the current definition owner at every actual dispatch rather than
 // retaining the preceding frame's owner across child/tail calls, EH or returns.
 // No managed roots, allocation, loader-allocator lookup or GC-triggering work.
-static FORCEINLINE void RuneCLRChargeCurrentInstruction(InterpMethodContextFrame* frame)
+static FORCEINLINE bool RuneCLRChargeCurrentInstruction(InterpMethodContextFrame* frame, InterpThreadContext* threadContext)
 {
     LIMITED_METHOD_CONTRACT;
     MethodDesc* method = frame->startIp->Method->methodHnd;
@@ -913,9 +915,29 @@ static FORCEINLINE void RuneCLRChargeCurrentInstruction(InterpMethodContextFrame
     {
         RuneCLRInstructionMeter* meter = binder->GetRuneCLRInstructionMeter();
         if (meter != nullptr)
-            meter->Charge();
+        {
+            if (!meter->IsTerminalPrototype())
+                meter->Charge();
+            else if (meter->IsTerminated() && threadContext->runeclrCleanupOwner == meter)
+                return meter->TryChargeCleanup();
+            else
+                return meter->ChargeExecution();
+        }
     }
+    return true;
 }
+
+// A denied ordinary body throws under the existing managed-dispatch handlers.
+// Only an actual EH finally/fault invocation may abandon its remaining author
+// cleanup using the normal native funclet return; callbacks do not gain that exit.
+#define RUNECLR_CHARGE_DISPATCH() do { \
+    if (!RuneCLRChargeCurrentInstruction(pFrame, pThreadContext)) { \
+        pFrame->ip = ip; \
+        if (pExceptionClauseArgs != nullptr && pExceptionClauseArgs->isCleanup) \
+            goto RUNECLR_ABANDON_CLEANUP; \
+        INTERP_THROW(kOperationCanceledException); \
+    } \
+} while (0)
 
 // When enabled, each opcode dispatches directly to the next one via an indirect goto,
 // avoiding the overhead of the central switch dispatch.
@@ -925,7 +947,7 @@ static FORCEINLINE void RuneCLRChargeCurrentInstruction(InterpMethodContextFrame
 
 #if USE_COMPUTED_GOTO
 #define INTOP_CASE(x) LABEL_ ## x:
-#define INTOP_DISPATCH(op) do { opcode = (uint32_t)(op); RuneCLRChargeCurrentInstruction(pFrame); goto *s_dispatchTable[opcode]; } while (0)
+#define INTOP_DISPATCH(op) do { opcode = (uint32_t)(op); RUNECLR_CHARGE_DISPATCH(); goto *s_dispatchTable[opcode]; } while (0)
 #define INTOP_NEXT INTOP_DISPATCH(ip[0])
 #else
 #define INTOP_CASE(x) case x:
@@ -1482,6 +1504,7 @@ void InterpExecMethod(InterpreterFrame *pInterpreterFrame, InterpMethodContextFr
 
     TADDR resumeSP = 0;
     TADDR resumeIP = 0;
+    InterpMethodContextFrame* const runeclrInvocationFrame = pFrame;
 
 #if defined(HOST_AMD64) && defined(HOST_WINDOWS)
     pInterpreterFrame->SetInterpExecMethodSSP((TADDR)_rdsspq());
@@ -1554,7 +1577,7 @@ MAIN_LOOP:
             opcode = ip[0];
 SWITCH_OPCODE:
             // Also covers debugger bypass dispatches that jump to this label.
-            RuneCLRChargeCurrentInstruction(pFrame);
+            RUNECLR_CHARGE_DISPATCH();
             switch (opcode)
             {
 #endif // !USE_COMPUTED_GOTO
@@ -5015,6 +5038,23 @@ do                                                                      \
 
         goto MAIN_LOOP;
     }
+
+RUNECLR_ABANDON_CLEANUP:
+    // No native/trusted frame is skipped. This invocation is the real EH
+    // finally/fault funclet; its worker still performs GCPROTECT_END and Pop.
+    // Drop only the interpreter children allocated in this invocation. No GC
+    // may occur between dropping their roots and the existing exit path.
+    _ASSERTE(pExceptionClauseArgs != nullptr && pExceptionClauseArgs->isCleanup);
+    while (pFrame != runeclrInvocationFrame)
+    {
+        _ASSERTE(pFrame != nullptr);
+        pThreadContext->frameDataAllocator.PopInfo(pFrame);
+        pFrame->ip = nullptr;
+        pFrame = pFrame->pParent;
+    }
+    pThreadContext->frameDataAllocator.PopInfo(pFrame);
+    pFrame->ip = nullptr;
+    _ASSERTE(pFrame->pParent == nullptr);
 
 EXIT_FRAME:
     // Exit the current frame, MAKE CERTAIN not to trigger any GC between here and the return, since the interpreter
