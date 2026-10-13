@@ -1417,6 +1417,11 @@ PCODE CachedInterfaceDispatchResolveWorker(StubCallSite* pCallSite, OBJECTREF *p
     }
 #endif // _DEBUG
 
+    // Do not retain collectible receiver metadata, or a dynamic implementation
+    // whose owner can differ from the receiver's loader allocator.
+    if (objectType->Collectible() || objectType->IsIDynamicInterfaceCastable())
+        patch = FALSE;
+
     if (patch && pCallSite != NULL)
     {
         DispatchCellInfo cellInfo = ((InterfaceDispatchCell*)pCallSite->GetIndirectCell())->GetDispatchCellInfo();
