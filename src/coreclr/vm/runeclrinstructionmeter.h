@@ -16,7 +16,8 @@ public:
           m_derivedLedger(terminalPrototype && CLRConfig::GetConfigValue(CLRConfig::EXTERNAL_RuneCLRDerivedLedger) != 0),
           m_remaining(limit), m_executed(0),
           m_cleanupRemaining(cleanupLimit), m_cleanupExecuted(0), m_phase(0),
-          m_initialExecutionLimit(limit), m_initialCleanupLimit(cleanupLimit)
+          m_initialExecutionLimit(limit), m_initialCleanupLimit(cleanupLimit),
+          m_batchInterval(terminalPrototype ? NormalizeBatchInterval(CLRConfig::GetConfigValue(CLRConfig::EXTERNAL_RuneCLRBatchInterval)) : 0)
     {
         // Keep existing field offsets; append immutable allowances for the opt-in ledger.
         static_assert(offsetof(RuneCLRInstructionMeter, m_enabled) == 0);
@@ -30,12 +31,43 @@ public:
         static_assert(offsetof(RuneCLRInstructionMeter, m_phase) == 40);
         static_assert(offsetof(RuneCLRInstructionMeter, m_initialExecutionLimit) == 48);
         static_assert(offsetof(RuneCLRInstructionMeter, m_initialCleanupLimit) == 56);
-        static_assert(sizeof(RuneCLRInstructionMeter) == 64);
+        static_assert(offsetof(RuneCLRInstructionMeter, m_batchInterval) == 64);
+        static_assert(sizeof(RuneCLRInstructionMeter) == 72);
         static_assert(alignof(RuneCLRInstructionMeter) == 8);
     }
 
     bool Enabled() const { return m_enabled; }
     bool IsTerminalPrototype() const { return m_terminalPrototype; }
+    UINT32 BatchInterval() const noexcept { return m_batchInterval; }
+    bool CanBeginBatch() noexcept
+    {
+        if (IsTerminated())
+            return false;
+        if (Remaining() > 0)
+            return true;
+        InterlockedCompareExchange(&m_phase, 1, 0);
+        return false;
+    }
+
+    // Experimental post-admission debt, not a reservation or an exact quota.
+    // Called only after safe opcodes ran; count them even if another worker terminated.
+    NOINLINE void RecordBatch(UINT32 admitted) noexcept
+    {
+        AddSaturating(m_executed, admitted);
+        LONGLONG previous = Remaining();
+        for (;;)
+        {
+            LONGLONG next = previous >= admitted ? previous - admitted : 0;
+            LONGLONG observed = InterlockedCompareExchange64(&m_remaining, next, previous);
+            if (observed == previous)
+            {
+                if (previous < admitted)
+                    InterlockedCompareExchange(&m_phase, 1, 0);
+                break;
+            }
+            previous = observed;
+        }
+    }
     bool IsTerminated() const noexcept { return Phase() != 0; }
     LONG Reason() const noexcept { return IsTerminated() ? 1 : 0; }
     LONG Phase() const noexcept
@@ -65,7 +97,7 @@ public:
         }
         if (IsTerminated())
             return false;
-        if (!TryConsume(m_remaining, m_executed, m_derivedLedger))
+        if (!TryConsume(m_remaining, m_executed, m_derivedLedger && m_batchInterval == 0, m_batchInterval != 0))
         {
             // The first rejected opcode latches the cause; no managed exception is needed here.
             InterlockedCompareExchange(&m_phase, 1, 0);
@@ -95,7 +127,7 @@ public:
     INT64 Executed() const noexcept
     {
         // Count CAS-admitted dispatches, not completed bodies; separate getters are not a transaction.
-        if (m_derivedLedger)
+        if (m_derivedLedger && m_batchInterval == 0)
             return m_initialExecutionLimit - Remaining();
         return InterlockedCompareExchange64(&m_executed, 0, 0);
     }
@@ -123,8 +155,24 @@ public:
     }
 
 private:
-    // Count only allowed terminal opcodes. At quiescence, remaining = limit - executed.
-    static FORCEINLINE bool TryConsume(volatile LONGLONG& remaining, volatile LONGLONG& executed, bool derivedLedger) noexcept
+    static UINT32 NormalizeBatchInterval(UINT32 value) noexcept
+    {
+        return value == 1 || value == 100 || value == 1000 ? value : 0;
+    }
+    static void AddSaturating(volatile LONGLONG& executed, UINT32 admitted) noexcept
+    {
+        LONGLONG previous = InterlockedCompareExchange64(&executed, 0, 0);
+        for (;;)
+        {
+            LONGLONG next = previous > INT64_MAX - admitted ? INT64_MAX : previous + admitted;
+            LONGLONG observed = InterlockedCompareExchange64(&executed, next, previous);
+            if (observed == previous)
+                break;
+            previous = observed;
+        }
+    }
+    // Batch profiles can overshoot; their exact admissions must also saturate.
+    static FORCEINLINE bool TryConsume(volatile LONGLONG& remaining, volatile LONGLONG& executed, bool derivedLedger, bool saturating = false) noexcept
     {
         LONGLONG previous = InterlockedCompareExchange64(&remaining, 0, 0);
         while (previous > 0)
@@ -132,9 +180,13 @@ private:
             LONGLONG observed = InterlockedCompareExchange64(&remaining, previous - 1, previous);
             if (observed == previous)
             {
-                // The immutable positive limit is at most INT64_MAX, so admitted charges cannot overflow.
                 if (!derivedLedger)
-                    InterlockedIncrement64(&executed);
+                {
+                    if (saturating)
+                        AddSaturating(executed, 1);
+                    else
+                        InterlockedIncrement64(&executed);
+                }
                 return true;
             }
             previous = observed;
@@ -155,6 +207,7 @@ private:
     mutable volatile LONG m_phase; // 0 execution; 1 terminated cleanup; 2 cleanup exhausted.
     alignas(8) const INT64 m_initialExecutionLimit;
     alignas(8) const INT64 m_initialCleanupLimit;
+    const UINT32 m_batchInterval;
 };
 
 #endif // _RUNECLR_INSTRUCTION_METER_H

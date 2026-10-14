@@ -16,6 +16,7 @@
 #include "arraynative.inl"
 #include "assemblybinder.h"
 #include "runeclrinstructionmeter.h"
+#include "runeclrbatchstate.h"
 
 #ifdef TARGET_WASM
 extern "C" void SamplingProfiler_OnSamplepoint();
@@ -906,7 +907,32 @@ NOINLINE static void InterpThrow(InterpMethodContextFrame* pFrame, const int32_t
 // Resolve the current definition owner at every actual dispatch rather than
 // retaining the preceding frame's owner across child/tail calls, EH or returns.
 // No managed roots, allocation, loader-allocator lookup or GC-triggering work.
-static FORCEINLINE bool RuneCLRChargeCurrentInstruction(InterpMethodContextFrame* frame, InterpThreadContext* threadContext)
+static FORCEINLINE bool RuneCLRIsBatchSafeOpcode(UINT32 opcode)
+{
+    switch (opcode)
+    {
+        case INTOP_LDC_I4: case INTOP_LDC_I4_0: case INTOP_LDC_I8: case INTOP_LDC_I8_0:
+        case INTOP_MOV_4: case INTOP_MOV_8:
+        case INTOP_ADD_I4: case INTOP_ADD_I8: case INTOP_ADD_I4_IMM: case INTOP_ADD_I8_IMM:
+        case INTOP_SUB_I4: case INTOP_SUB_I8: case INTOP_MUL_I4: case INTOP_MUL_I8:
+        case INTOP_AND_I4: case INTOP_AND_I8: case INTOP_OR_I4: case INTOP_OR_I8:
+        case INTOP_XOR_I4: case INTOP_XOR_I8:
+        case INTOP_BR: case INTOP_BRFALSE_I4: case INTOP_BRFALSE_I8: case INTOP_BRTRUE_I4: case INTOP_BRTRUE_I8:
+        case INTOP_BEQ_I4: case INTOP_BEQ_I8: case INTOP_BNE_UN_I4: case INTOP_BNE_UN_I8:
+        case INTOP_BGE_I4: case INTOP_BGE_I8: case INTOP_BGT_I4: case INTOP_BGT_I8:
+        case INTOP_BLE_I4: case INTOP_BLE_I8: case INTOP_BLT_I4: case INTOP_BLT_I8:
+        case INTOP_CEQ_I4: case INTOP_CEQ_I8: case INTOP_CGT_I4: case INTOP_CGT_I8: case INTOP_CLT_I4: case INTOP_CLT_I8:
+        case INTOP_CONV_I8_I4: case INTOP_CONV_I8_U4: case INTOP_CONV_U8_U4:
+            return true;
+        case INTOP_SAFEPOINT:
+            return g_TrapReturningThreads == 0;
+        default:
+            return false;
+    }
+}
+
+static FORCEINLINE bool RuneCLRChargeCurrentInstruction(InterpMethodContextFrame* frame, InterpThreadContext* threadContext,
+                                                       RuneCLRBatchState& batch, UINT32 opcode)
 {
     LIMITED_METHOD_CONTRACT;
     MethodDesc* method = frame->startIp->Method->methodHnd;
@@ -916,6 +942,9 @@ static FORCEINLINE bool RuneCLRChargeCurrentInstruction(InterpMethodContextFrame
         RuneCLRInstructionMeter* meter = binder->GetRuneCLRInstructionMeter();
         if (meter != nullptr)
         {
+            if (meter->BatchInterval() != 0 && threadContext->runeclrCleanupOwner != meter && RuneCLRIsBatchSafeOpcode(opcode))
+                return batch.Admit(meter, frame, frame->startIp);
+            batch.Flush();
             if (!meter->IsTerminalPrototype())
                 meter->Charge();
             else if (meter->IsTerminated() && threadContext->runeclrCleanupOwner == meter)
@@ -924,6 +953,7 @@ static FORCEINLINE bool RuneCLRChargeCurrentInstruction(InterpMethodContextFrame
                 return meter->ChargeExecution();
         }
     }
+    batch.Flush();
     return true;
 }
 
@@ -931,7 +961,7 @@ static FORCEINLINE bool RuneCLRChargeCurrentInstruction(InterpMethodContextFrame
 // Only an actual EH finally/fault invocation may abandon its remaining author
 // cleanup using the normal native funclet return; callbacks do not gain that exit.
 #define RUNECLR_CHARGE_DISPATCH() do { \
-    if (!RuneCLRChargeCurrentInstruction(pFrame, pThreadContext)) { \
+    if (!RuneCLRChargeCurrentInstruction(pFrame, pThreadContext, runeclrBatch, opcode)) { \
         pFrame->ip = ip; \
         if (pExceptionClauseArgs != nullptr && pExceptionClauseArgs->isCleanup) \
             goto RUNECLR_ABANDON_CLEANUP; \
@@ -1505,6 +1535,7 @@ void InterpExecMethod(InterpreterFrame *pInterpreterFrame, InterpMethodContextFr
     TADDR resumeSP = 0;
     TADDR resumeIP = 0;
     InterpMethodContextFrame* const runeclrInvocationFrame = pFrame;
+    RuneCLRBatchState runeclrBatch;
 
 #if defined(HOST_AMD64) && defined(HOST_WINDOWS)
     pInterpreterFrame->SetInterpExecMethodSSP((TADDR)_rdsspq());
@@ -2116,6 +2147,8 @@ SWITCH_OPCODE:
                     pFrame->ip = ip;
                     if (g_TrapReturningThreads)
                     {
+                        // The trap can become set after dispatch classified this opcode.
+                        runeclrBatch.Flush();
                         Thread *pThread = GetThread();
                         if (pThread->IsAbortRequested())
                         {

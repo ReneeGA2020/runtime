@@ -299,6 +299,7 @@ RETAIL_CONFIG_STRING_INFO(EXTERNAL_AltJitExcludeAssemblies, W("AltJitExcludeAsse
 RETAIL_CONFIG_DWORD_INFO(EXTERNAL_RuneCLRInterpretCollectible, W("RuneCLRInterpretCollectible"), 0, "Diagnostic: require interpretation of collectible-module IL bodies.")
 RETAIL_CONFIG_DWORD_INFO(EXTERNAL_RuneCLRPhaseAcquireLoad, W("RuneCLRPhaseAcquireLoad"), 0, "Experimental: cache acquire phase reads for terminal instruction meters.")
 RETAIL_CONFIG_DWORD_INFO(EXTERNAL_RuneCLRDerivedLedger, W("RuneCLRDerivedLedger"), 0, "Experimental: derive terminal admitted counts from immutable allowances and remaining budgets.")
+RETAIL_CONFIG_DWORD_INFO(EXTERNAL_RuneCLRBatchInterval, W("RuneCLRBatchInterval"), 0, "Experimental only: post-admission checks every 1/100/1000 safe scalar opcodes; may overshoot quotas.")
 #ifdef FEATURE_INTERPRETER
 RETAIL_CONFIG_STRING_INFO(EXTERNAL_InterpreterName, W("InterpreterName"), "Primary interpreter to use")
 CONFIG_STRING_INFO(INTERNAL_InterpreterPath, W("InterpreterPath"), "Full path to the interpreter to use")
