@@ -11,16 +11,32 @@ class RuneCLRInstructionMeter
 {
 public:
     explicit RuneCLRInstructionMeter(INT64 limit, bool terminalPrototype = false, INT64 cleanupLimit = 0)
-        : m_enabled(limit > 0), m_terminalPrototype(terminalPrototype), m_remaining(limit), m_executed(0),
+        : m_enabled(limit > 0), m_terminalPrototype(terminalPrototype),
+          m_phaseAcquireLoad(terminalPrototype && CLRConfig::GetConfigValue(CLRConfig::EXTERNAL_RuneCLRPhaseAcquireLoad) != 0),
+          m_remaining(limit), m_executed(0),
           m_cleanupRemaining(cleanupLimit), m_cleanupExecuted(0), m_phase(0)
     {
+        // The opt-in flag occupies existing padding; keep accepted meter field offsets.
+        static_assert(offsetof(RuneCLRInstructionMeter, m_enabled) == 0);
+        static_assert(offsetof(RuneCLRInstructionMeter, m_terminalPrototype) == 1);
+        static_assert(offsetof(RuneCLRInstructionMeter, m_phaseAcquireLoad) == 2);
+        static_assert(offsetof(RuneCLRInstructionMeter, m_remaining) == 8);
+        static_assert(offsetof(RuneCLRInstructionMeter, m_executed) == 16);
+        static_assert(offsetof(RuneCLRInstructionMeter, m_cleanupRemaining) == 24);
+        static_assert(offsetof(RuneCLRInstructionMeter, m_cleanupExecuted) == 32);
+        static_assert(offsetof(RuneCLRInstructionMeter, m_phase) == 40);
+        static_assert(sizeof(RuneCLRInstructionMeter) == 48);
     }
 
     bool Enabled() const { return m_enabled; }
     bool IsTerminalPrototype() const { return m_terminalPrototype; }
     bool IsTerminated() const noexcept { return Phase() != 0; }
     LONG Reason() const noexcept { return IsTerminated() ? 1 : 0; }
-    LONG Phase() const noexcept { return InterlockedCompareExchange(&m_phase, 0, 0); }
+    LONG Phase() const noexcept
+    {
+        // Acquire orders later reads, but does not retain the old full RMW fence.
+        return m_phaseAcquireLoad ? VolatileLoad(&m_phase) : InterlockedCompareExchange(&m_phase, 0, 0);
+    }
 
     INT64 CleanupRemaining() const noexcept
     {
@@ -116,6 +132,7 @@ private:
 
     const bool m_enabled;
     const bool m_terminalPrototype;
+    const bool m_phaseAcquireLoad;
     alignas(8) mutable volatile LONGLONG m_remaining;
     alignas(8) mutable volatile LONGLONG m_executed;
     alignas(8) mutable volatile LONGLONG m_cleanupRemaining;
