@@ -106,14 +106,8 @@ private:
             if (observed == previous)
             {
                 // The immutable positive limit is at most INT64_MAX, so admitted charges cannot overflow.
-                previous = InterlockedCompareExchange64(&executed, 0, 0);
-                while (true)
-                {
-                    observed = InterlockedCompareExchange64(&executed, previous + 1, previous);
-                    if (observed == previous)
-                        return true;
-                    previous = observed;
-                }
+                InterlockedIncrement64(&executed);
+                return true;
             }
             previous = observed;
         }
