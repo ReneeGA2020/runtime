@@ -59,6 +59,11 @@ namespace System.Reflection
 
             if (method is DynamicMethod dm)
             {
+#if CORECLR
+                RuneCLRReflectionPolicy.RefuseUnsupported("Dynamic MethodInvoker creation");
+                // Signature needs the descriptor even when the dynamic method has not been invoked or bound yet.
+                _ = dm.GetMethodDescriptor();
+#endif
                 return new MethodInvoker(dm);
             }
 
@@ -188,6 +193,9 @@ namespace System.Reflection
 
         private object? InvokeImpl(object? obj, object? arg1, object? arg2, object? arg3, object? arg4)
         {
+#if CORECLR
+            RuneCLRReflectionPolicy.CheckInvoker(_method, obj, _argCount, arg1, arg2, arg3, arg4);
+#endif
             if ((_invocationFlags & (InvocationFlags.NoInvoke | InvocationFlags.ContainsStackPointers | InvocationFlags.NoConstructorInvoke)) != 0 &&
                 ((_invocationFlags & (InvocationFlags.NoInvoke | InvocationFlags.ContainsStackPointers)) != 0 || _isStatic || obj is null))
             {
@@ -241,6 +249,9 @@ namespace System.Reflection
         /// </exception>
         public object? Invoke(object? obj, Span<object?> arguments)
         {
+#if CORECLR
+            RuneCLRReflectionPolicy.CheckInvoker(_method, obj, arguments);
+#endif
             int argLen = arguments.Length;
             if (argLen != _argCount)
             {

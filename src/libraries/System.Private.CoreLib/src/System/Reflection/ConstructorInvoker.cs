@@ -155,6 +155,9 @@ namespace System.Reflection
 
         private object InvokeImpl(object? arg1, object? arg2, object? arg3, object? arg4)
         {
+#if CORECLR
+            RuneCLRReflectionPolicy.CheckInvoker(_method, null, _argCount, arg1, arg2, arg3, arg4);
+#endif
             if ((_invocationFlags & (InvocationFlags.NoInvoke | InvocationFlags.ContainsStackPointers | InvocationFlags.NoConstructorInvoke)) != 0)
             {
                 _method.ThrowNoInvokeException();
@@ -201,6 +204,9 @@ namespace System.Reflection
         /// </exception>
         public object Invoke(Span<object?> arguments)
         {
+#if CORECLR
+            RuneCLRReflectionPolicy.CheckInvoker(_method, null, arguments);
+#endif
             int argLen = arguments.Length;
             if (argLen != _argCount)
             {

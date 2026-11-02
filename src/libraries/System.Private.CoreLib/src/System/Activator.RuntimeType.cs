@@ -134,7 +134,9 @@ namespace System
             return o != null ? new ObjectHandle(o) : null;
         }
 
+#if !CORECLR
         [Intrinsic]
+#endif
         public static T CreateInstance<[DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicParameterlessConstructor)] T>()
             where T : allows ref struct
         {

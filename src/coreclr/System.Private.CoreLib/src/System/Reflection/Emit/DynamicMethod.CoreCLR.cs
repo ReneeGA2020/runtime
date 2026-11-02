@@ -46,6 +46,7 @@ namespace System.Reflection.Emit
 
         public sealed override Delegate CreateDelegate(Type delegateType, object? target)
         {
+            RuneCLRReflectionPolicy.DemandInternalDelegateCreation("DynamicMethod.CreateDelegate");
             if (_restrictedSkipVisibility)
             {
                 // Compile the method since accessibility checks are done as part of compilation
@@ -113,6 +114,7 @@ namespace System.Reflection.Emit
 
         public override object? Invoke(object? obj, BindingFlags invokeAttr, Binder? binder, object?[]? parameters, CultureInfo? culture)
         {
+            RuneCLRReflectionPolicy.RefuseUnsupported("DynamicMethod.Invoke");
             if ((CallingConvention & CallingConventions.VarArgs) == CallingConventions.VarArgs)
                 throw new NotSupportedException(SR.NotSupported_CallToVarArg);
 

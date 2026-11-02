@@ -264,6 +264,11 @@ namespace System.Reflection
             SerializationInfo.ThrowIfDeserializationInProgress("AllowAssembliesFromByteArrays",
                 ref s_cachedSerializationSwitch);
 
+#if CORECLR
+            AssemblyLoadContext? controlled = RuneCLRReflectionPolicy.LoadContext(null);
+            if (controlled is not null) return controlled.InternalLoad(rawAssembly, rawSymbolStore);
+#endif
+
             AssemblyLoadContext alc = new IndividualAssemblyLoadContext("Assembly.Load(byte[], ...)");
             return alc.InternalLoad(rawAssembly, rawSymbolStore);
         }
@@ -279,6 +284,11 @@ namespace System.Reflection
             }
 
             string normalizedPath = Path.GetFullPath(path);
+
+#if CORECLR
+            AssemblyLoadContext? controlled = RuneCLRReflectionPolicy.LoadContext(null);
+            if (controlled is not null) return controlled.LoadFromAssemblyPath(normalizedPath);
+#endif
 
             Assembly? result;
             lock (s_loadfile)
@@ -377,6 +387,11 @@ namespace System.Reflection
             ArgumentNullException.ThrowIfNull(assemblyFile);
 
             string fullPath = Path.GetFullPath(assemblyFile);
+
+#if CORECLR
+            AssemblyLoadContext? controlled = RuneCLRReflectionPolicy.LoadContext(null);
+            if (controlled is not null) return controlled.LoadFromAssemblyPath(fullPath);
+#endif
 
             if (!s_loadFromHandlerSet)
             {

@@ -103,6 +103,9 @@ namespace System.Reflection
             object?[]? parameters,
             CultureInfo? culture)
         {
+#if CORECLR
+            RuneCLRReflectionPolicy.CheckConstructor(this, obj, parameters);
+#endif
             if ((InvocationFlags & InvocationFlags.NoInvoke) != 0)
                 ThrowNoInvokeException();
 
@@ -135,6 +138,9 @@ namespace System.Reflection
         [DebuggerHidden]
         public override object Invoke(BindingFlags invokeAttr, Binder? binder, object?[]? parameters, CultureInfo? culture)
         {
+#if CORECLR
+            RuneCLRReflectionPolicy.CheckConstructor(this, null, parameters);
+#endif
             if ((InvocationFlags & (InvocationFlags.NoInvoke | InvocationFlags.ContainsStackPointers | InvocationFlags.NoConstructorInvoke)) != 0)
             {
                 ThrowNoInvokeException();

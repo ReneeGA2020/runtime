@@ -359,7 +359,9 @@ namespace System.Reflection
                                                             RuntimeAssembly? requestingAssembly = null,
                                                             bool throwOnFileNotFound = true)
         {
+            assemblyLoadContext = RuneCLRReflectionPolicy.LoadContext(assemblyLoadContext) ?? assemblyLoadContext;
             RuntimeAssembly? retAssembly = null;
+            int resolutionDepth = RuneCLRReflectionPolicy.TrustedResolutionDepth;
 
             AssemblyNameFlags flags = assemblyName.RawFlags;
 
@@ -390,12 +392,17 @@ namespace System.Reflection
 
                 nameParts.SetVersion(assemblyName.Version, defaultValue: ushort.MaxValue);
 
-                InternalLoad(&nameParts,
-                             ObjectHandleOnStack.Create(ref requestingAssembly),
-                             new StackCrawlMarkHandle(ref stackMark),
-                             throwOnFileNotFound,
-                             ObjectHandleOnStack.Create(ref assemblyLoadContext),
-                             ObjectHandleOnStack.Create(ref retAssembly));
+                RuneCLRReflectionPolicy.TrustedResolutionDepth = 0;
+                try
+                {
+                    InternalLoad(&nameParts,
+                                 ObjectHandleOnStack.Create(ref requestingAssembly),
+                                 new StackCrawlMarkHandle(ref stackMark),
+                                 throwOnFileNotFound,
+                                 ObjectHandleOnStack.Create(ref assemblyLoadContext),
+                                 ObjectHandleOnStack.Create(ref retAssembly));
+                }
+                finally { RuneCLRReflectionPolicy.TrustedResolutionDepth = resolutionDepth; }
             }
 
             return retAssembly!;

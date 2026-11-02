@@ -730,6 +730,7 @@ namespace System.Reflection
             }
 
             RuntimeType[] argumentTypes = constructor.ArgumentTypes;
+            RuneCLRReflectionPolicy.CheckConstructor(constructor, null, null);
             int argumentCount = argumentTypes.Length;
             var parser = new CustomAttributeEncodedArgument.CustomAttributeDataParser(GetAttributeBlob(blob, blobEnd));
             if (!parser.ValidateProlog())
@@ -787,6 +788,8 @@ namespace System.Reflection
                     }
 
                     blob += parser.Consumed;
+                    if (RuneCLRReflectionPolicy.HasScope)
+                        RuneCLRReflectionPolicy.CheckConstructor(constructor, null, references.ToArray());
                     return constructor.InvokeDirectByRef(argumentStorage);
                 }
                 finally

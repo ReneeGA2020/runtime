@@ -405,6 +405,11 @@ namespace System.Runtime.Loader
                 throw new ArgumentException(SR.Format(SR.Argument_AbsolutePathRequired, assemblyPath), nameof(assemblyPath));
             }
 
+#if CORECLR
+            AssemblyLoadContext? owner = RuneCLRReflectionPolicy.LoadContext(this);
+            if (owner is not null && !ReferenceEquals(owner, this)) return owner.LoadFromAssemblyPath(assemblyPath);
+#endif
+
             lock (_unloadLock)
             {
                 VerifyIsAlive();
@@ -428,6 +433,11 @@ namespace System.Runtime.Loader
                 throw new ArgumentException(SR.Format(SR.Argument_AbsolutePathRequired, assemblyPath), nameof(assemblyPath));
             }
 
+#if CORECLR
+            AssemblyLoadContext? owner = RuneCLRReflectionPolicy.LoadContext(this);
+            if (owner is not null && !ReferenceEquals(owner, this)) return owner.LoadFromNativeImagePath(nativeImagePath, assemblyPath);
+#endif
+
             lock (_unloadLock)
             {
                 VerifyIsAlive();
@@ -447,7 +457,17 @@ namespace System.Runtime.Loader
         {
             ArgumentNullException.ThrowIfNull(assembly);
 
+#if CORECLR
+            AssemblyLoadContext? owner = RuneCLRReflectionPolicy.LoadContext(this);
+            if (owner is not null && !ReferenceEquals(owner, this)) return owner.LoadFromStream(assembly, assemblySymbols);
+#endif
+
+#if CORECLR
+            bool sessionOwned = RuneCLRReflectionPolicy.LoadContext(this) is not null;
+            ReadOnlySpan<byte> spanAssembly = sessionOwned ? ReadAllBytesBounded(assembly) : ReadAllBytes(assembly);
+#else
             ReadOnlySpan<byte> spanAssembly = ReadAllBytes(assembly);
+#endif
             if (spanAssembly.IsEmpty)
             {
                 throw new BadImageFormatException(SR.BadImageFormat_EmptyAssembly);
@@ -457,7 +477,11 @@ namespace System.Runtime.Loader
             ReadOnlySpan<byte> spanSymbols = default;
             if (assemblySymbols != null)
             {
+#if CORECLR
+                spanSymbols = sessionOwned ? ReadAllBytesBounded(assemblySymbols) : ReadAllBytes(assemblySymbols);
+#else
                 spanSymbols = ReadAllBytes(assemblySymbols);
+#endif
             }
 
             lock (_unloadLock)
@@ -496,6 +520,46 @@ namespace System.Runtime.Loader
 
                 return bytes;
             }
+
+#if CORECLR
+            static ReadOnlySpan<byte> ReadAllBytesBounded(Stream stream)
+            {
+                if (stream.GetType() == typeof(MemoryStream) && ((MemoryStream)stream).TryGetBuffer(out ArraySegment<byte> memoryStreamBuffer))
+                {
+                    int position = (int)stream.Position;
+                    int available = memoryStreamBuffer.Count - position;
+                    if (available < 0 || available > RuneCLRReflectionPolicy.MaximumUgcImageBytes)
+                        throw new BadImageFormatException("UGC assembly exceeds the managed-IL input limit.");
+                    stream.Seek(0, SeekOrigin.End);
+                    return memoryStreamBuffer.AsSpan(position, available);
+                }
+
+                long length;
+                try { length = stream.Length - stream.Position; }
+                catch (NotSupportedException) { length = -1; }
+                if (length > RuneCLRReflectionPolicy.MaximumUgcImageBytes)
+                    throw new BadImageFormatException("UGC assembly exceeds the managed-IL input limit.");
+                if (length >= 0)
+                {
+                    if ((ulong)length > (ulong)Array.MaxLength)
+                        throw new BadImageFormatException(SR.BadImageFormat_BadILFormat);
+                    byte[] bytes = GC.AllocateUninitializedArray<byte>((int)length);
+                    stream.ReadExactly(bytes);
+                    return bytes;
+                }
+
+                using var memory = new MemoryStream();
+                byte[] chunk = new byte[81920];
+                int read;
+                while ((read = stream.Read(chunk, 0, chunk.Length)) != 0)
+                {
+                    if (memory.Length + read > RuneCLRReflectionPolicy.MaximumUgcImageBytes)
+                        throw new BadImageFormatException("UGC assembly exceeds the managed-IL input limit.");
+                    memory.Write(chunk, 0, read);
+                }
+                return memory.ToArray();
+            }
+#endif
         }
 
         // This method provides a way for overriders of LoadUnmanagedDll() to load an unmanaged DLL from a specific path in a

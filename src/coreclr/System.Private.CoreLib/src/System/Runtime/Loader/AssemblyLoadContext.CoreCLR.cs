@@ -11,6 +11,20 @@ namespace System.Runtime.Loader
 {
     public partial class AssemblyLoadContext
     {
+        private static readonly ConditionalWeakTable<AssemblyLoadContext, RuneCLRReflectionPolicy.Session> s_runeCLRPolicySessions = new();
+        internal RuneCLRReflectionPolicy.Session? RuneCLRPolicySession =>
+            s_runeCLRPolicySessions.TryGetValue(this, out var session) ? session : null;
+
+        internal void RuneCLR_AttachPolicySession(RuneCLRReflectionPolicy.Session session)
+        {
+            lock (_unloadLock)
+            {
+                VerifyIsAlive();
+                if (!IsCollectible || RuneCLR_GetExecutionPolicy() != 1 || RuneCLRPolicySession is not null)
+                    throw new InvalidOperationException("A UGC session requires a fresh interpreter-required context.");
+                s_runeCLRPolicySessions.Add(this, session);
+            }
+        }
         // Private matching-CoreLib experiment, not a public execution-policy API.
         private static AssemblyLoadContext RuneCLR_CreateInterpreterRequired(
             string name, Func<AssemblyLoadContext, AssemblyName, Assembly?> managedResolver)
@@ -46,7 +60,14 @@ namespace System.Runtime.Loader
                 _managedResolver = managedResolver;
             }
 
-            protected override Assembly? Load(AssemblyName assemblyName) => _managedResolver(this, assemblyName);
+            protected override Assembly? Load(AssemblyName assemblyName)
+            {
+                // The host resolver's own type dependencies keep their original binding context.
+                // Loads into this attached context still pass through byte admission below.
+                RuneCLRReflectionPolicy.TrustedResolutionDepth++;
+                try { return _managedResolver(this, assemblyName); }
+                finally { RuneCLRReflectionPolicy.TrustedResolutionDepth--; }
+            }
 
             protected override IntPtr LoadUnmanagedDll(string unmanagedDllName) =>
                 throw new NotSupportedException("Native libraries cannot be loaded through an interpreter-required context.");
@@ -123,22 +144,71 @@ namespace System.Runtime.Loader
         [RequiresUnreferencedCode("Types and members the loaded assembly depends on might be removed")]
         private RuntimeAssembly InternalLoadFromPath(string? assemblyPath)
         {
+            AssemblyLoadContext? owner = RuneCLRReflectionPolicy.LoadContext(this);
+            if (owner is not null)
+            {
+                byte[] image;
+                using (IO.FileStream stream = IO.File.OpenRead(assemblyPath!))
+                {
+                    if (stream.Length > RuneCLRReflectionPolicy.MaximumUgcImageBytes)
+                        throw new BadImageFormatException("UGC assembly exceeds the managed-IL input limit.");
+                    image = new byte[checked((int)stream.Length)];
+                    stream.ReadExactly(image);
+                }
+                return (RuntimeAssembly)owner.RuneCLR_LoadValidated(image, default, assemblyPath);
+            }
             RuntimeAssembly? loadedAssembly = null;
-            LoadFromPath(_nativeAssemblyLoadContext, assemblyPath, ObjectHandleOnStack.Create(ref loadedAssembly));
+            int resolutionDepth = RuneCLRReflectionPolicy.TrustedResolutionDepth;
+            RuneCLRReflectionPolicy.TrustedResolutionDepth = 0;
+            try
+            {
+                LoadFromPath(_nativeAssemblyLoadContext, assemblyPath, ObjectHandleOnStack.Create(ref loadedAssembly));
+            }
+            finally { RuneCLRReflectionPolicy.TrustedResolutionDepth = resolutionDepth; }
             return loadedAssembly!;
         }
 
         [RequiresUnreferencedCode("Types and members the loaded assembly depends on might be removed")]
         internal unsafe Assembly InternalLoad(ReadOnlySpan<byte> arrAssembly, ReadOnlySpan<byte> arrSymbols)
         {
-            RuntimeAssembly? loadedAssembly = null;
+            AssemblyLoadContext? owner = RuneCLRReflectionPolicy.LoadContext(this);
+            if (owner is not null)
+                return owner.RuneCLR_LoadValidated(arrAssembly, arrSymbols, null);
+            return RuneCLR_LoadRaw(arrAssembly, arrSymbols);
+        }
 
-            fixed (byte* ptrAssembly = arrAssembly, ptrSymbols = arrSymbols)
+        [RequiresUnreferencedCode("Types and members the loaded assembly depends on might be removed")]
+        private Assembly RuneCLR_LoadValidated(ReadOnlySpan<byte> assembly, ReadOnlySpan<byte> symbols, string? path)
+        {
+            lock (_unloadLock)
             {
-                LoadFromStream(_nativeAssemblyLoadContext, new IntPtr(ptrAssembly), arrAssembly.Length,
-                    new IntPtr(ptrSymbols), arrSymbols.Length, ObjectHandleOnStack.Create(ref loadedAssembly));
+                VerifyIsAlive();
+                if (assembly.Length > RuneCLRReflectionPolicy.MaximumUgcImageBytes)
+                    throw new BadImageFormatException("UGC assembly exceeds the managed-IL input limit.");
+                if (symbols.Length > RuneCLRReflectionPolicy.MaximumUgcImageBytes)
+                    throw new BadImageFormatException("UGC symbol store exceeds the managed-input limit.");
+                // Validate and load the same private snapshot, never the author's mutable array/path.
+                byte[] image = assembly.ToArray();
+                RuneCLRPolicySession!.Admit(image, path);
+                return RuneCLR_LoadRaw(image, symbols);
             }
+        }
 
+        [RequiresUnreferencedCode("Types and members the loaded assembly depends on might be removed")]
+        private unsafe Assembly RuneCLR_LoadRaw(ReadOnlySpan<byte> arrAssembly, ReadOnlySpan<byte> arrSymbols)
+        {
+            RuntimeAssembly? loadedAssembly = null;
+            int resolutionDepth = RuneCLRReflectionPolicy.TrustedResolutionDepth;
+            RuneCLRReflectionPolicy.TrustedResolutionDepth = 0;
+            try
+            {
+                fixed (byte* ptrAssembly = arrAssembly, ptrSymbols = arrSymbols)
+                {
+                    LoadFromStream(_nativeAssemblyLoadContext, new IntPtr(ptrAssembly), arrAssembly.Length,
+                        new IntPtr(ptrSymbols), arrSymbols.Length, ObjectHandleOnStack.Create(ref loadedAssembly));
+                }
+            }
+            finally { RuneCLRReflectionPolicy.TrustedResolutionDepth = resolutionDepth; }
             return loadedAssembly!;
         }
 
@@ -153,6 +223,8 @@ namespace System.Runtime.Loader
         /// </summary>
         internal Assembly LoadFromInMemoryModule(IntPtr moduleHandle)
         {
+            if (RuneCLRReflectionPolicy.LoadContext(this) is not null)
+                throw new NotSupportedException("OS-loaded native modules are unsupported in a UGC session.");
             ArgumentNullException.ThrowIfNull(moduleHandle);
 
             lock (_unloadLock)

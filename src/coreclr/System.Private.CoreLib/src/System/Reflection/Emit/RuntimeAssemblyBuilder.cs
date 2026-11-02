@@ -86,6 +86,9 @@ namespace System.Reflection.Emit
                                  AssemblyLoadContext assemblyLoadContext,
                                  IEnumerable<CustomAttributeBuilder>? assemblyAttributes)
         {
+            RuneCLRReflectionPolicy.RefuseUnsupported("Dynamic assembly emission");
+            if (RuneCLRReflectionPolicy.LoadContext(assemblyLoadContext) is not null)
+                throw new NotSupportedException("Dynamic assembly emission is unsupported in a UGC session.");
             Debug.Assert(name is not null);
 
             _access = access;

@@ -81,7 +81,11 @@ namespace System.Reflection
         #region FieldInfo Overrides
         [DebuggerStepThrough]
         [DebuggerHidden]
-        public override object? GetValue(object? obj) => FieldAccessor.GetValue(obj);
+        public override object? GetValue(object? obj)
+        {
+            RuneCLRReflectionPolicy.CheckField(this, obj, null, write: false);
+            return FieldAccessor.GetValue(obj);
+        }
 
         public override object GetRawConstantValue() { throw new InvalidOperationException(); }
 
@@ -89,6 +93,7 @@ namespace System.Reflection
         [DebuggerHidden]
         public override object? GetValueDirect(TypedReference obj)
         {
+            RuneCLRReflectionPolicy.RefuseDirectFieldAccess();
             if (obj.IsNull)
                 throw new ArgumentException(SR.Arg_TypedReference_Null);
 
@@ -99,12 +104,16 @@ namespace System.Reflection
         [DebuggerStepThrough]
         [DebuggerHidden]
         public override void SetValue(object? obj, object? value, BindingFlags invokeAttr, Binder? binder, CultureInfo? culture)
-            => FieldAccessor.SetValue(obj, value, invokeAttr, binder, culture);
+        {
+            RuneCLRReflectionPolicy.CheckField(this, obj, value, write: true);
+            FieldAccessor.SetValue(obj, value, invokeAttr, binder, culture);
+        }
 
         [DebuggerStepThrough]
         [DebuggerHidden]
         public override void SetValueDirect(TypedReference obj, object value)
         {
+            RuneCLRReflectionPolicy.RefuseDirectFieldAccess();
             if (obj.IsNull)
                 throw new ArgumentException(SR.Arg_TypedReference_Null);
 

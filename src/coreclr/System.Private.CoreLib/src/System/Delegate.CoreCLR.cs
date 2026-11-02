@@ -128,6 +128,7 @@ namespace System
 
         protected virtual object? DynamicInvokeImpl(object?[]? args)
         {
+            RuneCLRReflectionPolicy.RefuseUnsupported("Delegate.DynamicInvoke");
             RuntimeMethodHandleInternal method = new RuntimeMethodHandleInternal(GetInvokeMethod());
             RuntimeMethodInfo invoke = (RuntimeMethodInfo)RuntimeType.GetMethodBase((RuntimeType)GetType(), method)!;
 
@@ -274,6 +275,7 @@ namespace System
         [RequiresUnreferencedCode("The target method might be removed")]
         public static Delegate? CreateDelegate(Type type, object target, string method, bool ignoreCase, bool throwOnBindFailure)
         {
+            RuneCLRReflectionPolicy.RefuseUnsupported("Delegate.CreateDelegate");
             ArgumentNullException.ThrowIfNull(type);
             ArgumentNullException.ThrowIfNull(target);
             ArgumentNullException.ThrowIfNull(method);
@@ -305,6 +307,7 @@ namespace System
 
         public static Delegate? CreateDelegate(Type type, [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.AllMethods)] Type target, string method, bool ignoreCase, bool throwOnBindFailure)
         {
+            RuneCLRReflectionPolicy.RefuseUnsupported("Delegate.CreateDelegate");
             ArgumentNullException.ThrowIfNull(type);
             ArgumentNullException.ThrowIfNull(target);
             ArgumentNullException.ThrowIfNull(method);
@@ -337,6 +340,7 @@ namespace System
 
         public static Delegate? CreateDelegate(Type type, MethodInfo method, bool throwOnBindFailure)
         {
+            RuneCLRReflectionPolicy.RefuseUnsupported("Delegate.CreateDelegate");
             ArgumentNullException.ThrowIfNull(type);
             ArgumentNullException.ThrowIfNull(method);
 
@@ -368,6 +372,7 @@ namespace System
 
         public static Delegate? CreateDelegate(Type type, object? firstArgument, MethodInfo method, bool throwOnBindFailure)
         {
+            RuneCLRReflectionPolicy.RefuseUnsupported("Delegate.CreateDelegate");
             ArgumentNullException.ThrowIfNull(type);
             ArgumentNullException.ThrowIfNull(method);
 
@@ -397,6 +402,7 @@ namespace System
         internal static Delegate CreateDelegateForDynamicMethod(Type type, object? target, RuntimeMethodHandle method,
             DynamicMethod dynamicMethod)
         {
+            RuneCLRReflectionPolicy.DemandInternalDelegateCreation("Delegate.CreateDelegateForDynamicMethod");
             ArgumentNullException.ThrowIfNull(type);
 
             if (method.IsNullHandle())
@@ -424,6 +430,7 @@ namespace System
 
         internal static Delegate? CreateDelegateInternal(RuntimeType rtType, RuntimeMethodInfo rtMethod, object? firstArgument, DelegateBindingFlags flags)
         {
+            RuneCLRReflectionPolicy.RefuseUnsupported("Delegate.CreateDelegateInternal");
             Delegate d = InternalAlloc(rtType);
 
             return d.BindToMethodInfo(firstArgument, rtMethod, rtMethod.GetDeclaringTypeInternal(), flags) ? d : null;

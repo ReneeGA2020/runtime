@@ -1,5 +1,10 @@
 <linker>
   <assembly fullname="System.Private.CoreLib">
+    <type fullname="System.Reflection.RuneCLRReflectionPolicy">
+      <method name="RuneCLR_GetReflectionPolicyVersion" />
+      <method name="RuneCLR_EnterReflectionPolicy" />
+      <method name="RuneCLR_CreateReflectionPolicySession" />
+    </type>
     <type fullname="System.Runtime.Loader.AssemblyLoadContext">
       <!-- Private RuneCLR experiment bridge, invoked by trusted host reflection. -->
       <method name="RuneCLR_CreateInterpreterRequired" />

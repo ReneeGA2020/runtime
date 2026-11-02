@@ -15,10 +15,16 @@ namespace System.Reflection
             _invocationFlags = method.ComputeAndUpdateInvocationFlags();
         }
 
-        private unsafe MethodInvoker(DynamicMethod method) : this(method, method.Signature.Arguments)
+        private unsafe MethodInvoker(DynamicMethod method) : this(method, GetDynamicMethodArguments(method))
         {
             _invokeFunc_RefArgs = InvokeWithSharedThunk;
             // No _invocationFlags for DynamicMethod.
+        }
+
+        private static RuntimeType[] GetDynamicMethodArguments(DynamicMethod method)
+        {
+            RuneCLRReflectionPolicy.RefuseUnsupported("Dynamic MethodInvoker construction");
+            return method.Signature.Arguments;
         }
 
         private unsafe MethodInvoker(RuntimeConstructorInfo constructor) : this(constructor, constructor.Signature.Arguments)

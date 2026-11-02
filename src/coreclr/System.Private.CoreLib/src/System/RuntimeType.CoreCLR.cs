@@ -3964,6 +3964,7 @@ namespace System
         [DebuggerHidden]
         internal object? CreateInstanceDefaultCtor(bool publicOnly, bool wrapExceptions)
         {
+            RuneCLRReflectionPolicy.CheckDefaultConstruction(this);
             // Get or create the cached factory. Creating the cache will fail if one
             // of our invariant checks fails; e.g., no appropriate ctor found.
 
@@ -4001,6 +4002,7 @@ namespace System
         [DebuggerHidden]
         internal object? CreateInstanceOfT()
         {
+            RuneCLRReflectionPolicy.CheckDefaultConstruction(this);
             Debug.Assert(!IsValueType);
 
             ActivatorCache cache = GetOrCreateCacheEntry<ActivatorCache>();
@@ -4029,6 +4031,7 @@ namespace System
         [DebuggerHidden]
         internal void CallDefaultStructConstructor(ref byte data)
         {
+            RuneCLRReflectionPolicy.CheckDefaultConstruction(this);
             Debug.Assert(IsValueType);
 
             ActivatorCache cache = GetOrCreateCacheEntry<ActivatorCache>();

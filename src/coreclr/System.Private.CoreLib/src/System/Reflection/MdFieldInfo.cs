@@ -89,6 +89,7 @@ namespace System.Reflection
 
         private object? GetValue(bool raw)
         {
+            RuneCLRReflectionPolicy.CheckField(this, null, null, write: false);
             // Cannot cache these because they could be user defined non-agile enumerations
 
             object? value = MdConstant.GetValue(GetRuntimeModule().MetadataImport, m_tkField, FieldType.TypeHandle, raw);

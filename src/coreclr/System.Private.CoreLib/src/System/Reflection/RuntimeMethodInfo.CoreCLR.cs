@@ -285,6 +285,7 @@ namespace System.Reflection
         [DebuggerHidden]
         internal void InvokePropertySetter(object? obj, BindingFlags invokeAttr, Binder? binder, object? parameter, CultureInfo? culture)
         {
+            RuneCLRReflectionPolicy.CheckPropertySetter(this, obj, parameter);
             // ContainsStackPointers means that the struct (either the declaring type or the return type)
             // contains pointers that point to the stack. This is either a ByRef or a TypedReference. These structs cannot
             // be boxed and thus cannot be invoked through reflection which only deals with boxed value type objects.
@@ -388,6 +389,7 @@ namespace System.Reflection
 
         private Delegate CreateDelegateInternal(Type delegateType, object? firstArgument, DelegateBindingFlags bindingFlags)
         {
+            RuneCLRReflectionPolicy.RefuseUnsupported("Reflected delegate creation");
             ArgumentNullException.ThrowIfNull(delegateType);
 
             RuntimeType rtType = delegateType as RuntimeType ??
