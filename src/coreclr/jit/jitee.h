@@ -45,7 +45,8 @@ public:
 
         JIT_FLAG_USE_DISPATCH_HELPERS    = 31, // The JIT should use helpers for interface dispatch instead of virtual stub dispatch
         JIT_FLAG_VERIFY_GC_MODE_TRANSITIONS = 32, // The JIT should emit the diagnostic helpers that verify GC mode transitions are legal
-        JIT_FLAG_INTERPRET_REQUIRED       = 33, // VM requires interpretation of this IL body
+        JIT_FLAG_INTERPRET_REQUIRED       = 34, // VM requires interpretation of this IL body
+        JIT_FLAG_WASM_MANAGED_HELPER    = 33, // Store a constant CoreLib frame identity instead of the incoming portable entrypoint
 
         // Note: the mcs tool uses the currently unused upper flags bits when outputting SuperPMI MC file flags.
         // See EXTRA_JIT_FLAGS and spmidumphelper.cpp. Currently, these are bits 56 through 63. If they overlap,
@@ -148,6 +149,7 @@ public:
         FLAGS_EQUAL(CORJIT_FLAGS::CORJIT_FLAG_USE_DISPATCH_HELPERS, JIT_FLAG_USE_DISPATCH_HELPERS);
         FLAGS_EQUAL(CORJIT_FLAGS::CORJIT_FLAG_VERIFY_GC_MODE_TRANSITIONS, JIT_FLAG_VERIFY_GC_MODE_TRANSITIONS);
         FLAGS_EQUAL(CORJIT_FLAGS::CORJIT_FLAG_INTERPRET_REQUIRED, JIT_FLAG_INTERPRET_REQUIRED);
+        FLAGS_EQUAL(CORJIT_FLAGS::CORJIT_FLAG_WASM_MANAGED_HELPER, JIT_FLAG_WASM_MANAGED_HELPER);
 
 #undef FLAGS_EQUAL
     }

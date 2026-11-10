@@ -259,6 +259,7 @@ std::string SpmiDumpHelper::DumpJitFlags(unsigned long long flags)
 
     AddFlag(USE_DISPATCH_HELPERS);
     AddFlag(INTERPRET_REQUIRED);
+    AddFlag(WASM_MANAGED_HELPER);
 
     // "Extra jit flag" support
     //
