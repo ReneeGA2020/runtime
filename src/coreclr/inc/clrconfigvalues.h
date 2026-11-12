@@ -298,6 +298,11 @@ RETAIL_CONFIG_STRING_INFO(EXTERNAL_AltJitExcludeAssemblies, W("AltJitExcludeAsse
 // EEConfig rejects an enabled request on that build instead of silently ignoring it.
 RETAIL_CONFIG_DWORD_INFO(EXTERNAL_RuneCLRInterpretCollectible, W("RuneCLRInterpretCollectible"), 0, "Diagnostic: require interpretation of collectible-module IL bodies.")
 RETAIL_CONFIG_DWORD_INFO(EXTERNAL_RuneCLRPhaseAcquireLoad, W("RuneCLRPhaseAcquireLoad"), 0, "Experimental: cache acquire phase reads for terminal instruction meters.")
+RETAIL_CONFIG_DWORD_INFO(EXTERNAL_RuneCLRDeadlineFastPhase, W("RuneCLRDeadlineFastPhase"), 0, "Experimental deadline fast-phase v1: acquire-load the terminal phase for deadline-enabled meters only.")
+RETAIL_CONFIG_DWORD_INFO(EXTERNAL_RuneCLRDeadlineInlineDispatch, W("RuneCLRDeadlineInlineDispatch"), 0, "Experimental deadline inline dispatch v1; preserves parent checks and counters.")
+RETAIL_CONFIG_DWORD_INFO(EXTERNAL_RuneCLRDeadlineBatchedAdmitted, W("RuneCLRDeadlineBatchedAdmitted"), 0, "Experimental admitted diagnostic batching; observation contract2; default disabled.")
+RETAIL_CONFIG_DWORD_INFO(EXTERNAL_RuneCLRFrameMeterCache, W("RuneCLRFrameMeterCache"), 0, "Experimental frame-scoped definition meter cache; default disabled.")
+RETAIL_CONFIG_DWORD_INFO(EXTERNAL_RuneCLRDeadlineHealthyDispatch, W("RuneCLRDeadlineHealthyDispatch"), 0, "Experimental deadline-only healthy dispatch; default disabled.")
 RETAIL_CONFIG_DWORD_INFO(EXTERNAL_RuneCLRDerivedLedger, W("RuneCLRDerivedLedger"), 0, "Experimental: derive terminal admitted counts from immutable allowances and remaining budgets.")
 RETAIL_CONFIG_DWORD_INFO(EXTERNAL_RuneCLRBatchInterval, W("RuneCLRBatchInterval"), 0, "Experimental only: post-admission checks every 1/100/1000 safe scalar opcodes; may overshoot quotas.")
 #ifdef FEATURE_INTERPRETER

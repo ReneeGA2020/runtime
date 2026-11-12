@@ -52,6 +52,65 @@ namespace System.Runtime.Loader
         }
 
         private static int RuneCLR_GetTerminalPrototypeVersion() => RuneCLR_GetTerminalPrototypeVersionNative();
+        private static long RuneCLR_GetCallbackDeadlineVersion() => RuneCLR_DeadlineNative(IntPtr.Zero, 0, 0, 0);
+
+        private static AssemblyLoadContext RuneCLR_CreateCallbackDeadline(string name,
+            Func<AssemblyLoadContext, AssemblyName, Assembly?> resolver, long duration100ns, int interval, long cleanupLimit)
+        {
+            if (RuneCLR_GetCallbackDeadlineVersion() != 1)
+                throw new PlatformNotSupportedException();
+            AssemblyLoadContext context = RuneCLR_CreateTerminalPrototype(name, resolver, long.MaxValue, cleanupLimit);
+            try
+            {
+                context.RuneCLR_DeadlineOperation(1, duration100ns, interval);
+                return context;
+            }
+            catch { context.Unload(); throw; }
+        }
+
+        // Additive epoch capability contract. Version 1 above is unchanged; the capability
+        // bitmask lets a host reject epoch mode before any author file is touched.
+        private static int RuneCLR_GetCallbackDeadlineCapabilities() =>
+            (int)RuneCLR_DeadlineNative(IntPtr.Zero, 9, 0, 0);
+
+        private static AssemblyLoadContext RuneCLR_CreateCallbackDeadlineEpoch(string name,
+            Func<AssemblyLoadContext, AssemblyName, Assembly?> resolver, long duration100ns, int interval,
+            long cleanupLimit, long epochPeriodMicros)
+        {
+            if ((RuneCLR_GetCallbackDeadlineCapabilities() & 2) == 0)
+                throw new PlatformNotSupportedException("The runtime cannot create an epoch callback deadline.");
+            RuneCLR_DeadlineNative(IntPtr.Zero, 6, epochPeriodMicros, 0);
+            AssemblyLoadContext context = RuneCLR_CreateTerminalPrototype(name, resolver, long.MaxValue, cleanupLimit);
+            try
+            {
+                context.RuneCLR_DeadlineOperation(5, duration100ns, interval);
+                return context;
+            }
+            catch { context.Unload(); throw; }
+        }
+
+        // Trusted-host ticker entry points: the runtime owns no timer and no thread.
+        private static long RuneCLR_TickCallbackDeadlineEpoch() => RuneCLR_DeadlineNative(IntPtr.Zero, 7, 0, 0);
+        private static long RuneCLR_ReadCallbackDeadlineEpoch() => RuneCLR_DeadlineNative(IntPtr.Zero, 8, 0, 0);
+
+        private long RuneCLR_BeginCallbackDeadline() => RuneCLR_DeadlineOperation(2, 0, 0);
+        private bool RuneCLR_EndCallbackDeadline(long token) => RuneCLR_DeadlineOperation(3, token, 0) == 1;
+        private long RuneCLR_QueryCallbackDeadline(int field) => RuneCLR_DeadlineOperation(4, 0, field);
+
+        private long RuneCLR_DeadlineOperation(int operation, long value, int interval)
+        {
+            lock (_unloadLock)
+            {
+                VerifyIsAlive();
+                long result = RuneCLR_DeadlineNative(_nativeAssemblyLoadContext, operation, value, interval);
+                GC.KeepAlive(this);
+                return result;
+            }
+        }
+
+        [ErrorHandler(typeof(QCallExceptionStatusMarshaller), ErrorLocation.HiddenLastParameter)]
+        [LibraryImport(RuntimeHelpers.QCall, EntryPoint = "AssemblyNative_RuneCLRDeadline")]
+        private static partial long RuneCLR_DeadlineNative(IntPtr binder, int operation, long value, int interval);
         private bool RuneCLR_GetTerminalPrototypeIsTerminated() => RuneCLR_GetTerminalPrototypeReason() != 0;
 
         private int RuneCLR_GetTerminalPrototypeReason()

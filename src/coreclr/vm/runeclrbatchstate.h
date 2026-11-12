@@ -23,6 +23,16 @@ public:
         m_meter = nullptr;
         m_frame = m_start = nullptr;
     }
+    FORCEINLINE void FlushInline() noexcept
+    {
+        if (m_pending != 0)
+        {
+            m_meter->RecordBatch(m_pending);
+            m_pending = 0;
+        }
+        m_meter = nullptr;
+        m_frame = m_start = nullptr;
+    }
     bool Admit(RuneCLRInstructionMeter* meter, const void* frame, const void* start) noexcept
     {
         if (m_meter != meter || m_frame != frame || m_start != start || m_pending == meter->BatchInterval())

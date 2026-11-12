@@ -1348,6 +1348,68 @@ extern "C" INT32 QCALLTYPE AssemblyNative_RuneCLRGetTerminalPrototypeReason(INT_
     return reason;
 }
 
+std::atomic<INT64> g_runeCLREpoch{0};
+std::atomic<INT64> g_runeCLREpochPeriodMicros{0};
+
+extern "C" INT64 QCALLTYPE AssemblyNative_RuneCLRDeadline(INT_PTR binder, INT32 operation, INT64 value, INT32 interval, QCallExceptionStatus* qcallError)
+{
+    QCALL_CONTRACT;
+    INT64 result = 0;
+    BEGIN_QCALL;
+#ifndef FEATURE_INTERPRETER
+    COMPlusThrow(kPlatformNotSupportedException);
+#else
+    if (operation == 0)
+        result = 1;
+    else if (operation == 9)
+        result = 3; // bit0: v1 clock deadline, bit1: opt-in epoch mode
+    else if (operation == 6)
+    {
+        if (!RuneCLRDeclareEpochPeriod(value))
+            COMPlusThrow(kArgumentOutOfRangeException);
+        result = 1;
+    }
+    else if (operation == 7)
+        result = RuneCLRTickEpoch();
+    else if (operation == 8)
+        result = g_runeCLREpoch.load(std::memory_order_acquire);
+    else
+    {
+        RuneCLRInstructionMeter* meter = GetTerminalPrototypeMeterForQuery(binder);
+        RuneCLRDeadline& deadline = meter->Deadline();
+        switch (operation)
+        {
+            case 1:
+                if (meter->Executed() != 0 || meter->IsTerminated() || meter->BatchInterval() != 0 || !deadline.Configure(value, interval))
+                    COMPlusThrow(kArgumentOutOfRangeException);
+                result = 1;
+                break;
+            case 2:
+                if (meter->IsTerminated() || (result = deadline.Begin(GetThread())) == 0)
+                    COMPlusThrow(kInvalidOperationException);
+                break;
+            case 3:
+                result = deadline.End(GetThread(), value) ? 1 : 0;
+                break;
+            case 5:
+                if (meter->Executed() != 0 || meter->IsTerminated() || meter->BatchInterval() != 0 || !deadline.ConfigureEpoch(value, interval))
+                    COMPlusThrow(kArgumentOutOfRangeException);
+                result = 1;
+                break;
+            case 4:
+                // Baseline v1 query contract: raw field read, unknown field -> -1, no throwing
+                // and no owner guard. Fields 8..10 are additive reads, never a semantic change.
+                result = deadline.Query(interval);
+                break;
+            default:
+                COMPlusThrow(kArgumentOutOfRangeException);
+        }
+    }
+#endif
+    END_QCALL;
+    return result;
+}
+
 extern "C" INT32 QCALLTYPE AssemblyNative_RuneCLRGetTerminalPrototypePhase(INT_PTR ptrNativeAssemblyBinder, QCallExceptionStatus* qcallError)
 {
     QCALL_CONTRACT;

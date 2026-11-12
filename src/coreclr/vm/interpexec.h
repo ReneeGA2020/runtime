@@ -36,10 +36,30 @@ struct InterpMethodContextFrame
     int8_t *pRetVal;
     const int32_t *ip; // This ip is updated only when execution can leave the frame
     PTR_InterpMethodContextFrame pNext;
+    RuneCLRInstructionMeter* runeclrResolvedMeter;
+    bool runeclrMeterResolved;
 
 #ifndef DACCESS_COMPILE
+    FORCEINLINE void ResetRuneCLRMeter() noexcept
+    {
+        runeclrResolvedMeter = nullptr;
+        runeclrMeterResolved = false;
+    }
+
+    template<typename Resolver>
+    FORCEINLINE RuneCLRInstructionMeter* ResolveRuneCLRMeter(Resolver resolver)
+    {
+        if (!runeclrMeterResolved)
+        {
+            runeclrResolvedMeter = resolver();
+            runeclrMeterResolved = true;
+        }
+        return runeclrResolvedMeter;
+    }
+
     void ReInit(InterpMethodContextFrame *pParent, InterpByteCodeStart* startIp, int8_t *pRetVal, int8_t *pStack)
     {
+        ResetRuneCLRMeter();
         this->pParent = pParent;
         this->startIp = startIp;
         this->pRetVal = pRetVal;
@@ -48,6 +68,18 @@ struct InterpMethodContextFrame
     }
 #endif // DACCESS_COMPILE
 };
+
+#if defined(TARGET_AMD64)
+static_assert(offsetof(InterpMethodContextFrame, pParent) == 0);
+static_assert(offsetof(InterpMethodContextFrame, startIp) == 8);
+static_assert(offsetof(InterpMethodContextFrame, pStack) == 16);
+static_assert(offsetof(InterpMethodContextFrame, pRetVal) == 24);
+static_assert(offsetof(InterpMethodContextFrame, ip) == 32);
+static_assert(offsetof(InterpMethodContextFrame, pNext) == 40);
+static_assert(offsetof(InterpMethodContextFrame, runeclrResolvedMeter) == 48);
+static_assert(offsetof(InterpMethodContextFrame, runeclrMeterResolved) == 56);
+static_assert(sizeof(InterpMethodContextFrame) == 64);
+#endif
 
 struct InterpThreadContext
 {

@@ -11,6 +11,15 @@
       <method name="RuneCLR_GetInstructionMeterExecuted" />
       <method name="RuneCLR_GetInstructionMeterExhausted" />
       <method name="RuneCLR_CreateTerminalPrototype" />
+      <method name="RuneCLR_GetCallbackDeadlineVersion" />
+      <method name="RuneCLR_CreateCallbackDeadline" />
+      <method name="RuneCLR_GetCallbackDeadlineCapabilities" />
+      <method name="RuneCLR_CreateCallbackDeadlineEpoch" />
+      <method name="RuneCLR_TickCallbackDeadlineEpoch" />
+      <method name="RuneCLR_ReadCallbackDeadlineEpoch" />
+      <method name="RuneCLR_BeginCallbackDeadline" />
+      <method name="RuneCLR_EndCallbackDeadline" />
+      <method name="RuneCLR_QueryCallbackDeadline" />
       <method name="RuneCLR_GetTerminalPrototypeVersion" />
       <method name="RuneCLR_GetTerminalPrototypeIsTerminated" />
       <method name="RuneCLR_GetTerminalPrototypeReason" />

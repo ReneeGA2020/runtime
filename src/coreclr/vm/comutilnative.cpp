@@ -823,7 +823,7 @@ extern "C" CLR_BOOL QCALLTYPE GCInterface_RuneCLRIsTerminatedFinalizerOwner(QCal
         return FALSE;
     AssemblyBinder* binder = finalizer->GetModule()->GetPEAssembly()->GetAssemblyBinder();
     RuneCLRInstructionMeter* meter = binder == nullptr ? nullptr : binder->GetRuneCLRInstructionMeter();
-    return meter != nullptr && meter->IsTerminalPrototype() && meter->IsTerminated();
+    return meter != nullptr && meter->IsTerminalPrototype() && (meter->IsTerminated() || meter->Deadline().Enabled());
 #else
     return FALSE;
 #endif

@@ -114,6 +114,7 @@ extern "C" INT_PTR QCALLTYPE AssemblyNative_InitializeInterpreterRequiredLoadCon
 extern "C" INT_PTR QCALLTYPE AssemblyNative_InitializeInstructionMeteredLoadContext(INT_PTR ptrAssemblyLoadContext, INT64 instructionLimit, QCallExceptionStatus* qcallError);
 extern "C" INT_PTR QCALLTYPE AssemblyNative_InitializeTerminalPrototypeLoadContext(INT_PTR ptrAssemblyLoadContext, INT64 executionLimit, INT64 cleanupLimit, QCallExceptionStatus* qcallError);
 extern "C" INT32 QCALLTYPE AssemblyNative_RuneCLRGetTerminalPrototypeVersion(QCallExceptionStatus* qcallError);
+extern "C" INT64 QCALLTYPE AssemblyNative_RuneCLRDeadline(INT_PTR binder, INT32 operation, INT64 value, INT32 interval, QCallExceptionStatus* qcallError);
 extern "C" INT32 QCALLTYPE AssemblyNative_RuneCLRGetTerminalPrototypeReason(INT_PTR ptrNativeAssemblyBinder, QCallExceptionStatus* qcallError);
 extern "C" INT32 QCALLTYPE AssemblyNative_RuneCLRGetTerminalPrototypePhase(INT_PTR ptrNativeAssemblyBinder, QCallExceptionStatus* qcallError);
 extern "C" INT64 QCALLTYPE AssemblyNative_RuneCLRGetTerminalPrototypeCleanupRemaining(INT_PTR ptrNativeAssemblyBinder, QCallExceptionStatus* qcallError);

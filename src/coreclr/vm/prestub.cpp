@@ -2058,6 +2058,7 @@ FORCEINLINE static void* ExecuteInterpretedMethodBody(
     }
     frames(pTransitionBlock);
 
+    frames.interpMethodContextFrame.ResetRuneCLRMeter();
     frames.interpMethodContextFrame.startIp = dac_cast<PTR_InterpByteCodeStart>(byteCodeAddr);
     frames.interpMethodContextFrame.pStack = sp;
     frames.interpMethodContextFrame.pRetVal = (retBuff != NULL) ? (int8_t*)retBuff : sp;

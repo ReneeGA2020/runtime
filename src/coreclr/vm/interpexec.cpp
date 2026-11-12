@@ -931,26 +931,183 @@ static FORCEINLINE bool RuneCLRIsBatchSafeOpcode(UINT32 opcode)
     }
 }
 
+struct RuneCLRDeadlineOpcodeBytes
+{
+    unsigned char safe[INTOP_LAST];
+    constexpr RuneCLRDeadlineOpcodeBytes() noexcept : safe{}
+    {
+        safe[INTOP_LDC_I4] = 1;
+        safe[INTOP_LDC_I4_0] = 1;
+        safe[INTOP_LDC_I8] = 1;
+        safe[INTOP_LDC_I8_0] = 1;
+        safe[INTOP_MOV_4] = 1;
+        safe[INTOP_MOV_8] = 1;
+        safe[INTOP_ADD_I4] = 1;
+        safe[INTOP_ADD_I8] = 1;
+        safe[INTOP_ADD_I4_IMM] = 1;
+        safe[INTOP_ADD_I8_IMM] = 1;
+        safe[INTOP_SUB_I4] = 1;
+        safe[INTOP_SUB_I8] = 1;
+        safe[INTOP_MUL_I4] = 1;
+        safe[INTOP_MUL_I8] = 1;
+        safe[INTOP_AND_I4] = 1;
+        safe[INTOP_AND_I8] = 1;
+        safe[INTOP_OR_I4] = 1;
+        safe[INTOP_OR_I8] = 1;
+        safe[INTOP_XOR_I4] = 1;
+        safe[INTOP_XOR_I8] = 1;
+        safe[INTOP_BR] = 1;
+        safe[INTOP_BRFALSE_I4] = 1;
+        safe[INTOP_BRFALSE_I8] = 1;
+        safe[INTOP_BRTRUE_I4] = 1;
+        safe[INTOP_BRTRUE_I8] = 1;
+        safe[INTOP_BEQ_I4] = 1;
+        safe[INTOP_BEQ_I8] = 1;
+        safe[INTOP_BNE_UN_I4] = 1;
+        safe[INTOP_BNE_UN_I8] = 1;
+        safe[INTOP_BGE_I4] = 1;
+        safe[INTOP_BGE_I8] = 1;
+        safe[INTOP_BGT_I4] = 1;
+        safe[INTOP_BGT_I8] = 1;
+        safe[INTOP_BLE_I4] = 1;
+        safe[INTOP_BLE_I8] = 1;
+        safe[INTOP_BLT_I4] = 1;
+        safe[INTOP_BLT_I8] = 1;
+        safe[INTOP_CEQ_I4] = 1;
+        safe[INTOP_CEQ_I8] = 1;
+        safe[INTOP_CGT_I4] = 1;
+        safe[INTOP_CGT_I8] = 1;
+        safe[INTOP_CLT_I4] = 1;
+        safe[INTOP_CLT_I8] = 1;
+        safe[INTOP_CONV_I8_I4] = 1;
+        safe[INTOP_CONV_I8_U4] = 1;
+        safe[INTOP_CONV_U8_U4] = 1;
+    }
+};
+
+static constexpr RuneCLRDeadlineOpcodeBytes s_runeclrDeadlineOpcodeBytes{};
+
+static FORCEINLINE bool RuneCLRIsDeadlineTableSafeOpcode(UINT32 opcode) noexcept
+{
+    return opcode < INTOP_LAST && s_runeclrDeadlineOpcodeBytes.safe[opcode] != 0;
+}
+
+static FORCEINLINE bool RuneCLRChargeDeadlineInline(RuneCLRInstructionMeter* meter, InterpMethodContextFrame* frame,
+                                                    InterpThreadContext* threadContext, RuneCLRBatchState& batch,
+                                                    UINT32 opcode, const void*& deadlineFrame, bool& deadlineBoundary)
+{
+    if (meter->Deadline().Enabled() && (threadContext->runeclrCleanupOwner != meter || meter->PhaseInline() == 0))
+    {
+        bool boundary = deadlineBoundary || deadlineFrame != frame || !RuneCLRIsBatchSafeOpcode(opcode);
+        deadlineFrame = frame;
+        deadlineBoundary = !RuneCLRIsBatchSafeOpcode(opcode);
+        if (!meter->CheckDeadlineInline(GetThread(), boundary)) return false;
+    }
+    if (meter->BatchInterval() != 0 && threadContext->runeclrCleanupOwner != meter && RuneCLRIsBatchSafeOpcode(opcode))
+        return batch.Admit(meter, frame, frame->startIp);
+    batch.FlushInline();
+    if (!meter->IsTerminalPrototype())
+        meter->Charge();
+    else if (meter->PhaseInline() != 0 && threadContext->runeclrCleanupOwner == meter)
+    {
+        meter->Deadline().FlushOwner(GetThread());
+        return meter->TryChargeCleanup();
+    }
+    else
+    {
+        bool admitted = meter->ChargeExecutionInline();
+        if (!admitted) meter->Deadline().FlushOwner(GetThread());
+        return admitted;
+    }
+    return true;
+}
+
+static FORCEINLINE bool RuneCLRChargeDeadlineHealthy(RuneCLRInstructionMeter* meter, InterpMethodContextFrame* frame,
+                                                     InterpThreadContext* threadContext, RuneCLRBatchState& batch,
+                                                     UINT32 opcode, const void*& deadlineFrame, bool& deadlineBoundary)
+{
+    if (threadContext->runeclrCleanupOwner != meter || meter->PhaseInline() == 0)
+    {
+        bool boundary;
+        if (opcode == INTOP_SAFEPOINT)
+        {
+            boundary = deadlineBoundary || deadlineFrame != frame || !RuneCLRIsBatchSafeOpcode(opcode);
+            deadlineFrame = frame;
+            deadlineBoundary = !RuneCLRIsBatchSafeOpcode(opcode);
+        }
+        else
+        {
+            bool safe = RuneCLRIsDeadlineTableSafeOpcode(opcode);
+            boundary = deadlineBoundary || deadlineFrame != frame || !safe;
+            deadlineFrame = frame;
+            deadlineBoundary = !safe;
+        }
+        if (!meter->CheckDeadlineInline(GetThread(), boundary)) return false;
+    }
+    batch.FlushInline();
+    if (threadContext->runeclrCleanupOwner == meter && meter->PhaseInline() != 0)
+    {
+        meter->Deadline().FlushOwner(GetThread());
+        return meter->TryChargeCleanup();
+    }
+    bool admitted = meter->PhaseInline() == 0;
+    if (!admitted) meter->Deadline().FlushOwner(GetThread());
+    return admitted;
+}
+
 static FORCEINLINE bool RuneCLRChargeCurrentInstruction(InterpMethodContextFrame* frame, InterpThreadContext* threadContext,
-                                                       RuneCLRBatchState& batch, UINT32 opcode)
+                                                       RuneCLRBatchState& batch, UINT32 opcode, const void*& deadlineFrame, bool& deadlineBoundary,
+                                                       bool frameMeterCache)
 {
     LIMITED_METHOD_CONTRACT;
-    MethodDesc* method = frame->startIp->Method->methodHnd;
-    AssemblyBinder* binder = method->GetModule()->GetPEAssembly()->GetAssemblyBinder();
-    if (binder != nullptr)
+    RuneCLRInstructionMeter* meter;
+    if (frameMeterCache && frame->runeclrMeterResolved)
     {
-        RuneCLRInstructionMeter* meter = binder->GetRuneCLRInstructionMeter();
+        meter = frame->runeclrResolvedMeter;
+    }
+    else
+    {
+        MethodDesc* method = frame->startIp->Method->methodHnd;
+        AssemblyBinder* binder = method->GetModule()->GetPEAssembly()->GetAssemblyBinder();
+        meter = binder == nullptr ? nullptr : binder->GetRuneCLRInstructionMeter();
+        if (frameMeterCache)
+        {
+            frame->runeclrResolvedMeter = meter;
+            frame->runeclrMeterResolved = true;
+        }
+    }
+    {
         if (meter != nullptr)
         {
+            if (meter->InlineDeadlineDispatch() && meter->Deadline().Enabled())
+            {
+                if (meter->HealthyDeadlineDispatch())
+                    return RuneCLRChargeDeadlineHealthy(meter, frame, threadContext, batch, opcode, deadlineFrame, deadlineBoundary);
+                return RuneCLRChargeDeadlineInline(meter, frame, threadContext, batch, opcode, deadlineFrame, deadlineBoundary);
+            }
+            if (meter->Deadline().Enabled() && (threadContext->runeclrCleanupOwner != meter || !meter->IsTerminated()))
+            {
+                bool boundary = deadlineBoundary || deadlineFrame != frame || !RuneCLRIsBatchSafeOpcode(opcode);
+                deadlineFrame = frame;
+                deadlineBoundary = !RuneCLRIsBatchSafeOpcode(opcode);
+                if (!meter->CheckDeadline(GetThread(), boundary)) return false;
+            }
             if (meter->BatchInterval() != 0 && threadContext->runeclrCleanupOwner != meter && RuneCLRIsBatchSafeOpcode(opcode))
                 return batch.Admit(meter, frame, frame->startIp);
             batch.Flush();
             if (!meter->IsTerminalPrototype())
                 meter->Charge();
             else if (meter->IsTerminated() && threadContext->runeclrCleanupOwner == meter)
+            {
+                meter->Deadline().FlushOwner(GetThread());
                 return meter->TryChargeCleanup();
+            }
             else
-                return meter->ChargeExecution();
+            {
+                bool admitted = meter->ChargeExecution();
+                if (!admitted) meter->Deadline().FlushOwner(GetThread());
+                return admitted;
+            }
         }
     }
     batch.Flush();
@@ -961,7 +1118,7 @@ static FORCEINLINE bool RuneCLRChargeCurrentInstruction(InterpMethodContextFrame
 // Only an actual EH finally/fault invocation may abandon its remaining author
 // cleanup using the normal native funclet return; callbacks do not gain that exit.
 #define RUNECLR_CHARGE_DISPATCH() do { \
-    if (!RuneCLRChargeCurrentInstruction(pFrame, pThreadContext, runeclrBatch, opcode)) { \
+    if (!RuneCLRChargeCurrentInstruction(pFrame, pThreadContext, runeclrBatch, opcode, runeclrDeadlineFrame, runeclrDeadlineBoundary, runeclrFrameMeterCache)) { \
         pFrame->ip = ip; \
         if (pExceptionClauseArgs != nullptr && pExceptionClauseArgs->isCleanup) \
             goto RUNECLR_ABANDON_CLEANUP; \
@@ -1316,6 +1473,7 @@ extern "C" ContinuationObject* AsyncHelpers_ResumeInterpreterContinuationWorker(
     memset(sp, 0, pMethod->allocaSize);
     *(CONTINUATIONREF*)(sp + pSuspendData->continuationArgOffset) = contRef;
 
+    frames.interpMethodContextFrame.ResetRuneCLRMeter();
     frames.interpMethodContextFrame.startIp = pSuspendData->methodStartIP;
     frames.interpMethodContextFrame.pStack = sp;
 
@@ -1536,6 +1694,9 @@ void InterpExecMethod(InterpreterFrame *pInterpreterFrame, InterpMethodContextFr
     TADDR resumeIP = 0;
     InterpMethodContextFrame* const runeclrInvocationFrame = pFrame;
     RuneCLRBatchState runeclrBatch;
+    const void* runeclrDeadlineFrame = nullptr;
+    bool runeclrDeadlineBoundary = true;
+    const bool runeclrFrameMeterCache = CLRConfig::GetConfigValue(CLRConfig::EXTERNAL_RuneCLRFrameMeterCache) != 0;
 
 #if defined(HOST_AMD64) && defined(HOST_WINDOWS)
     pInterpreterFrame->SetInterpExecMethodSSP((TADDR)_rdsspq());

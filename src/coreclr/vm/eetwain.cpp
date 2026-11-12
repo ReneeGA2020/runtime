@@ -1907,6 +1907,7 @@ extern "C" DWORD_PTR STDCALL CallInterpreterFuncletWorker(OBJECTREF throwable, v
 
     StackVal retVal = {};
 
+    frames.interpMethodContextFrame.ResetRuneCLRMeter();
     frames.interpMethodContextFrame.startIp = pOriginalFrame->startIp;
     frames.interpMethodContextFrame.pStack = isFilter ? sp : pOriginalFrame->pStack;
     frames.interpMethodContextFrame.pRetVal = (int8_t*)&retVal;

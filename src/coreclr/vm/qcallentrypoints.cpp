@@ -274,6 +274,7 @@ static const Entry s_QCall[] =
     DllImportEntry(AssemblyNative_InitializeInstructionMeteredLoadContext)
     DllImportEntry(AssemblyNative_InitializeTerminalPrototypeLoadContext)
     DllImportEntry(AssemblyNative_RuneCLRGetTerminalPrototypeVersion)
+    DllImportEntry(AssemblyNative_RuneCLRDeadline)
     DllImportEntry(AssemblyNative_RuneCLRGetTerminalPrototypeReason)
     DllImportEntry(AssemblyNative_RuneCLRGetTerminalPrototypePhase)
     DllImportEntry(AssemblyNative_RuneCLRGetTerminalPrototypeCleanupRemaining)

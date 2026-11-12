@@ -3,6 +3,7 @@
 
 #ifndef _RUNECLR_INSTRUCTION_METER_H
 #define _RUNECLR_INSTRUCTION_METER_H
+#include "runeclrdeadline.h"
 
 // Private diagnostic accounting plus an opt-in terminal prototype.
 // Charge() preserves diagnostic v1 behavior; terminal dispatch uses ChargeExecution().
@@ -32,12 +33,52 @@ public:
         static_assert(offsetof(RuneCLRInstructionMeter, m_initialExecutionLimit) == 48);
         static_assert(offsetof(RuneCLRInstructionMeter, m_initialCleanupLimit) == 56);
         static_assert(offsetof(RuneCLRInstructionMeter, m_batchInterval) == 64);
-        static_assert(sizeof(RuneCLRInstructionMeter) == 72);
         static_assert(alignof(RuneCLRInstructionMeter) == 8);
     }
 
     bool Enabled() const { return m_enabled; }
+    RuneCLRDeadline& Deadline() noexcept { return m_deadline; }
+    bool CheckDeadline(void* owner, bool boundary) noexcept
+    {
+        if (!m_deadline.Admit(owner, boundary))
+        {
+            InterlockedCompareExchange(&m_phase, 1, 0);
+            return false;
+        }
+        return true;
+    }
     bool IsTerminalPrototype() const { return m_terminalPrototype; }
+    bool InlineDeadlineDispatch() const noexcept { return m_deadlineInlineDispatch; }
+    bool HealthyDeadlineDispatch() const noexcept { return m_deadlineHealthyDispatch; }
+    FORCEINLINE bool CheckDeadlineInline(void* owner, bool boundary) noexcept
+    {
+        if (!m_deadline.AdmitInline(owner, boundary))
+        {
+            InterlockedCompareExchange(&m_phase, 1, 0);
+            return false;
+        }
+        return true;
+    }
+    FORCEINLINE LONG PhaseInline() const noexcept
+    {
+        if (m_deadline.Failure() != 0 && VolatileLoad(&m_phase) == 0)
+            InterlockedCompareExchange(&m_phase, 1, 0);
+        return (m_phaseAcquireLoad || (m_deadlineFastPhase && m_deadline.Enabled()))
+            ? VolatileLoad(&m_phase) : InterlockedCompareExchange(&m_phase, 0, 0);
+    }
+    FORCEINLINE bool ChargeExecutionInline() noexcept
+    {
+        if (!m_terminalPrototype)
+        {
+            Charge();
+            return true;
+        }
+        if (PhaseInline() != 0)
+            return false;
+        if (m_deadline.Enabled())
+            return true;
+        return ChargeExecution();
+    }
     UINT32 BatchInterval() const noexcept { return m_batchInterval; }
     bool CanBeginBatch() noexcept
     {
@@ -69,11 +110,14 @@ public:
         }
     }
     bool IsTerminated() const noexcept { return Phase() != 0; }
-    LONG Reason() const noexcept { return IsTerminated() ? 1 : 0; }
+    LONG Reason() const noexcept { return m_deadline.Failure() != 0 ? m_deadline.Failure() : (IsTerminated() ? 1 : 0); }
     LONG Phase() const noexcept
     {
+        if (m_deadline.Failure() != 0 && VolatileLoad(&m_phase) == 0)
+            InterlockedCompareExchange(&m_phase, 1, 0);
         // Acquire orders later reads, but does not retain the old full RMW fence.
-        return m_phaseAcquireLoad ? VolatileLoad(&m_phase) : InterlockedCompareExchange(&m_phase, 0, 0);
+        return (m_phaseAcquireLoad || (m_deadlineFastPhase && m_deadline.Enabled()))
+            ? VolatileLoad(&m_phase) : InterlockedCompareExchange(&m_phase, 0, 0);
     }
 
     INT64 CleanupRemaining() const noexcept
@@ -97,6 +141,8 @@ public:
         }
         if (IsTerminated())
             return false;
+        if (m_deadline.Enabled())
+            return true;
         if (!TryConsume(m_remaining, m_executed, m_derivedLedger && m_batchInterval == 0, m_batchInterval != 0))
         {
             // The first rejected opcode latches the cause; no managed exception is needed here.
@@ -208,6 +254,13 @@ private:
     alignas(8) const INT64 m_initialExecutionLimit;
     alignas(8) const INT64 m_initialCleanupLimit;
     const UINT32 m_batchInterval;
+    RuneCLRDeadline m_deadline;
+    const bool m_deadlineFastPhase = m_terminalPrototype &&
+        CLRConfig::GetConfigValue(CLRConfig::EXTERNAL_RuneCLRDeadlineFastPhase) != 0;
+    const bool m_deadlineInlineDispatch = m_terminalPrototype &&
+        CLRConfig::GetConfigValue(CLRConfig::EXTERNAL_RuneCLRDeadlineInlineDispatch) != 0;
+    const bool m_deadlineHealthyDispatch = m_terminalPrototype && m_batchInterval == 0 &&
+        CLRConfig::GetConfigValue(CLRConfig::EXTERNAL_RuneCLRDeadlineHealthyDispatch) != 0;
 };
 
 #endif // _RUNECLR_INSTRUCTION_METER_H
