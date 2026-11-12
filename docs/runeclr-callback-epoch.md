@@ -4,8 +4,9 @@ Status: this is the publication branch for the Windows x64 callback-deadline exp
 deadline code under test is `e637bd791bd824b3a8118fca47073f6390bcb52a`; this document and the short
 note in `docs/runeclr-dev.md` are the only commits on top of it, together with a merge of the
 advanced `runeclr/dev` that now carries the opt-in session-origin change. The branch is measured
-against `runeclr/dev` at `0c8c1a682e95c3c8ab57842ed19f7328c66ccc47`. It is not merged into
-`runeclr/dev`, exposes no public API and does not enable deadline charging by default.
+against `runeclr/dev` at `0c8c1a682e95c3c8ab57842ed19f7328c66ccc47`. It exposes no public API and
+does not enable deadline charging by default; the merge decision is tracked in pull request #2,
+not in this document.
 
 ## Contents
 
@@ -22,9 +23,12 @@ against `runeclr/dev` at `0c8c1a682e95c3c8ab57842ed19f7328c66ccc47`. It is not m
   (`CLRTestKind=BuildOnly`, `RequiresProcessIsolation`, no xunit wrapper). It is launched directly
   against a built Core_Root and exits 0 when every check passes (1 on a failed check, 2 from its
   watchdog).
-- The branch changes 16 files (+2080/-1) across 11 commits against `0c8c1a68`: the 14-file
-  deadline delta from `e637`, the merge commit that brings in the five session-origin files, and
-  the documentation commits. Every deadline product blob on the branch is identical to `e637`.
+- Against `0c8c1a68` the branch carries the 14-file deadline delta from `e637`, the merge commit
+  that brings in the five session-origin files, and documentation commits; the pull request shows
+  the current file and commit counts. The eleven deadline-only product files are byte-identical to
+  `e637`; in the three files it shares with the session-origin change (`assemblynative.cpp`,
+  `assemblynative.hpp`, `qcallentrypoints.cpp`) the additional lines are the merged session-origin
+  additions.
 
 ## Private ABI (version 1)
 
@@ -92,6 +96,9 @@ invalid numeric arguments are `ArgumentOutOfRangeException`.
 | area | result | evidence |
 | --- | --- | --- |
 | combined cohort (deadline + session-origin, merge commit `234c0b7a90f`) | Release build 0/0; native 69/69 PASS; IL tail 5 assertions PASS; source checker 8/8; Windows Debug compile 0/0; both private APIs present (policy version 4, deadline version 1) | integration-merge-20261113/runtime/combined-*.log |
+| combined delivery identity | coreclr 48289d63..., clrinterpreter 6b861fc7..., clrjit 197834f4..., corerun 30a8dd9a..., CoreLib e9a94ae0...; `SHA256SUMS.txt` 529a34b3...; `pdb/coreclr.pdb` bacbb515... | delivery-combined/SHA256SUMS.txt |
+| fresh focused upstream on the combined cohort | `ContextualReflection`, `CollectibleStatics`, `GenericVirtualMethod` and `InterpreterTester` each expected 100 / actual 100, wrapper exit 0, run from already-built 474-based Checked test assemblies against the combined Core_Root | integration-merge-20261113/upstream/REPORT.md |
+| host join on the combined cohort | epoch suite 24/24; lifecycle 156/156 ordinary and 156/156 with `--require-interpreter`; stock lifecycle 156/156; session-origin matrix 16/16 modes (710 pins, no drift, no failures) against an explicit `474eb8ad` base with the two documentation files allowlisted; provenance fixtures 43/0 and 11/0 | integration-merge-20261113/host/combined-receipt.json |
 | native correctness cohort of the pre-merge deadline source | 69/69 PASS, exit 0 | final2-correctness.log |
 | IL tail-call fixture | 5 assertions PASS | final2-tail.log |
 | Windows Debug compile | 0 warnings, 0 errors; Checked backend selection has source proof only | guardfix-debug-build.log |
@@ -102,10 +109,11 @@ invalid numeric arguments are `ArgumentOutOfRangeException`.
 | fixture packaging | project marked BuildOnly; measured fixture launched directly against the Core_Root, exit 0 | project file and native lane logs |
 
 The rows above the combined row were recorded on the pre-merge deadline source (`08e031af`, delivery
-`delivery-1ac`). The combined row is that source merged with the session-origin change and is the
-cohort proposed for `runeclr/dev`. The four focused upstream tests were not re-run on the combined
-runtime: the test harness fails in this environment with `MSB4184 ... ReadAllText('')` before
-building them, so their 100/100 results below belong to the pre-merge source only.
+`delivery-1ac`). The combined rows describe that source merged with the session-origin change, built
+from `234c0b7a90f` into `delivery-combined`, and are the cohort proposed for `runeclr/dev`. The
+focused upstream suite was re-run on that combined cohort in a separate workspace; this workspace's
+own harness still stops at `MSB4184 ... ReadAllText('')` before it builds the tests, so the suite ran
+from already-built assemblies rather than a rebuild.
 
 The upstream `InterpreterTester` is the official wrapper and sets `DOTNET_Interpreter=RunInterpreterTests`
 internally; it asserts only the child exit code, so this is compatibility evidence for the documented
@@ -120,9 +128,12 @@ The inspected Release build log (`final2-release-build.log`) stamps
 `e637` existed. `e637` consolidates backend guards and updates comments and the test fixture.
 Its active Windows Release interpreter implementation is identical to `1ac56d5` (3829 vs 3829,
 0 differing lines); its separate Windows Debug compile closes the configuration break. Checked
-backend selection is covered by source checks, not by a separate Checked build. The delivered `08e031af`
-binary is therefore the measured artifact of this Release code path, not a build produced by the
-documentation commit on this branch.
+backend selection is covered by source checks, not by a separate Checked build. The delivered
+`08e031af` binary is therefore the measured artifact of this Release code path, not a build
+produced by the documentation commit on this branch.
+
+The combined cohort row above is a separate build of `234c0b7a90f` (coreclr `48289d63` with CoreLib
+`e9a94ae0`), recorded in `delivery-combined` with `SHA256SUMS.txt` `529a34b3`.
 
 ## Performance scope
 
