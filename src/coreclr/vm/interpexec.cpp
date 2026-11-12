@@ -917,7 +917,7 @@ NOINLINE static void InterpThrow(InterpMethodContextFrame* pFrame, const int32_t
 static FORCEINLINE RuneCLRDeadline* RuneCLRResolveCallbackDeadline(InterpMethodContextFrame* frame)
 {
     LIMITED_METHOD_CONTRACT;
-    if (!frame->runeclrCallbackDeadlineResolved)
+    if (frame->runeclrCallbackDeadline == nullptr)
     {
         RuneCLRDeadline* deadline = nullptr;
         MethodDesc* method = frame->startIp->Method->methodHnd;
@@ -925,8 +925,7 @@ static FORCEINLINE RuneCLRDeadline* RuneCLRResolveCallbackDeadline(InterpMethodC
         if (binder != nullptr)
             deadline = binder->GetRuneCLRCallbackDeadline();
 
-        frame->runeclrCallbackDeadline = deadline;
-        frame->runeclrCallbackDeadlineResolved = true;
+        frame->runeclrCallbackDeadline = deadline == nullptr ? &g_runeCLRDeadlineNone : deadline;
     }
     return frame->runeclrCallbackDeadline;
 }
@@ -1050,7 +1049,7 @@ static FORCEINLINE bool RuneCLRChargeCallbackDeadline(InterpMethodContextFrame* 
                                                       UINT32 opcode, const void*& deadlineFrame, bool& deadlineBoundary)
 {
     RuneCLRDeadline* deadline = RuneCLRResolveCallbackDeadline(frame);
-    if (deadline == nullptr || !deadline->Enabled())
+    if (!deadline->Enabled())
         return true;
 
     // Only a terminated deadline converts the cleanup funclet to the bounded budget;
@@ -1075,7 +1074,8 @@ static FORCEINLINE bool RuneCLRChargeCallbackDeadline(InterpMethodContextFrame* 
 // Only an actual EH finally/fault invocation may abandon its remaining author
 // cleanup using the normal native funclet return; callbacks do not gain that exit.
 #define RUNECLR_CALLBACK_DEADLINE_DISPATCH() do { \
-    if (!RuneCLRChargeCallbackDeadline(pFrame, pThreadContext, opcode, runeclrDeadlineFrame, runeclrDeadlineBoundary)) { \
+    if (RuneCLRAnyDeadlineConfigured() && \
+        !RuneCLRChargeCallbackDeadline(pFrame, pThreadContext, opcode, runeclrDeadlineFrame, runeclrDeadlineBoundary)) { \
         pFrame->ip = ip; \
         RuneCLRDeadlineTraceBit(0x4); \
         if (pExceptionClauseArgs != nullptr) { \

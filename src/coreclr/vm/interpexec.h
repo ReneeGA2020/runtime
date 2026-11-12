@@ -37,16 +37,16 @@ struct InterpMethodContextFrame
     const int32_t *ip; // This ip is updated only when execution can leave the frame
     PTR_InterpMethodContextFrame pNext;
 
-    // Private RuneCLR experiment: the binder's callback deadline is resolved once
-    // per frame (see runeclrdeadline.h) so dispatch only pays a pointer load.
+    // Private RuneCLR experiment: the binder's callback deadline is resolved once per
+    // frame (see runeclrdeadline.h). nullptr means "not resolved yet"; the resolved
+    // "no deadline" case stores &g_runeCLRDeadlineNone so the cache stays one pointer
+    // and the frame stays 56 bytes instead of 64.
     RuneCLRDeadline* runeclrCallbackDeadline;
-    bool runeclrCallbackDeadlineResolved;
 
 #ifndef DACCESS_COMPILE
     FORCEINLINE void ResetRuneCLRCallbackDeadline() noexcept
     {
         runeclrCallbackDeadline = nullptr;
-        runeclrCallbackDeadlineResolved = false;
     }
 
     void ReInit(InterpMethodContextFrame *pParent, InterpByteCodeStart* startIp, int8_t *pRetVal, int8_t *pStack)

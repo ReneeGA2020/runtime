@@ -1315,6 +1315,8 @@ std::atomic<INT64> g_runeCLREpoch{0};
 std::atomic<INT64> g_runeCLREpochPeriodMicros{0};
 std::atomic<LONG> g_runeCLRDeadlineFuncletSeen{0};
 std::atomic<LONG> g_runeCLRDeadlineTrace{0};
+std::atomic<LONG> g_runeCLRDeadlineConfigured{0};
+RuneCLRDeadline g_runeCLRDeadlineNone;
 
 // Operations: 0 version, 1 configure clock deadline, 2 begin, 3 end, 4 query field,
 // 5 configure epoch deadline, 6 declare epoch period, 7 tick epoch, 8 read epoch,

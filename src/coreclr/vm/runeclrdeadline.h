@@ -37,6 +37,16 @@ inline void RuneCLRDeadlineTraceBit(LONG bit) noexcept
     g_runeCLRDeadlineTrace.fetch_or(bit, std::memory_order_relaxed);
 }
 
+// Process-sticky gate: 0 until some binder configures a deadline. While it is 0 the
+// interpreter checkpoint is one relaxed load and one never-taken branch, so a process
+// that never opts in keeps the unpatched interpreter path. It is never cleared.
+extern std::atomic<LONG> g_runeCLRDeadlineConfigured;
+
+FORCEINLINE bool RuneCLRAnyDeadlineConfigured() noexcept
+{
+    return g_runeCLRDeadlineConfigured.load(std::memory_order_relaxed) != 0;
+}
+
 // Host-declared period, latched process-wide to the first declared value; repeating the same
 // value is idempotent and a different value is rejected by the caller (qcall op 6 maps it to
 // ArgumentOutOfRangeException).
@@ -139,6 +149,7 @@ public:
         m_duration = whole + fractional;
         m_interval = interval;
         m_configured = true;
+        g_runeCLRDeadlineConfigured.store(1, std::memory_order_release);
         return true;
     }
 
@@ -170,6 +181,7 @@ public:
         m_interval = interval;
         m_epochMode = true;
         m_configured = true;
+        g_runeCLRDeadlineConfigured.store(1, std::memory_order_release);
         return true;
     }
 
@@ -438,5 +450,10 @@ private:
     alignas(8) mutable volatile LONGLONG m_cleanupRemaining = 0;
     LONGLONG m_cleanupCharges = 0;
 };
+
+// Resolved "this frame's binder has no deadline" marker. Keeping a single pointer per
+// frame instead of a pointer plus a resolved flag keeps InterpMethodContextFrame at
+// 56 bytes rather than 64. It is never configured and never handed to a host.
+extern RuneCLRDeadline g_runeCLRDeadlineNone;
 
 #endif // _RUNECLR_DEADLINE_H
