@@ -4,7 +4,7 @@ Status: this is the publication branch for the Windows x64 callback-deadline exp
 under test is `e637bd791bd824b3a8118fca47073f6390bcb52a`; this document and the short note in
 `docs/runeclr-dev.md` are the only commits on top of it. The branch is measured against
 `runeclr/dev` at `474eb8ad7230122cc0d34318b25d673da63fd138`. It is not merged into `runeclr/dev`,
-exposes no public API and does not change any default path.
+exposes no public API and does not enable deadline charging by default.
 
 ## Contents
 
@@ -91,12 +91,12 @@ invalid numeric arguments are `ArgumentOutOfRangeException`.
 | --- | --- | --- |
 | native correctness cohort | 69/69 PASS, exit 0 | final2-correctness.log |
 | IL tail-call fixture | 5 assertions PASS | final2-tail.log |
-| Windows Debug/Checked compile | 0 warnings, 0 errors | guardfix-debug-build.log |
+| Windows Debug compile | 0 warnings, 0 errors; Checked backend selection has source proof only | guardfix-debug-build.log |
 | source checker on e637 | 8/8 PASS; negative 41bc/1ac 6/8, S3 prototype 2/8 | phase2 verdict logs |
 | delivery identity | coreclr 08e031af4e6fbd649dae4e30cb839d5a3d9b135f1a32629b34ac676f1dda806c, clrinterpreter f4d5ea48..., clrjit 4b15f3ae..., corerun 09017fa3..., CoreLib 30020d07... | delivery-1ac/SHA256SUMS.txt |
 | host join on that delivery | epoch suite 24/24; lifecycle 156/156 ordinary and 156/156 with --require-interpreter; verifier 659 pins, 521-file layout, zero drift | final-hostjoin/ |
 | focused upstream | ContextualReflection, CollectibleStatics, GenericVirtualMethod and InterpreterTester each Expected 100 / Actual 100, exit 0 | final-upstream/ |
-| fixture | CallbackEpochDeadline builds as BuildOnly and exits 0 against the Core_Root | native lane logs |
+| fixture packaging | project marked BuildOnly; measured fixture launched directly against the Core_Root, exit 0 | project file and native lane logs |
 
 The upstream `InterpreterTester` is the official wrapper and sets `DOTNET_Interpreter=RunInterpreterTests`
 internally; it asserts only the child exit code, so this is compatibility evidence for the documented
@@ -107,11 +107,35 @@ interrupted; the experiment is a fail-closed budget, not a sandbox.
 
 The inspected Release build log (`final2-release-build.log`) stamps
 `CLI_CMAKE_COMMIT_HASH=1ac56d5968106be661cc61b35cc1836301c14f9a` because that build ran before
-`e637` existed. `e637` itself changes only preprocessor guards and comments: its active Windows
-Release lines are identical to `1ac56d5` (3829 vs 3829, 0 differing lines), and its separate
-Windows Debug/Checked compile is what closes the configuration break. The delivered `08e031af`
+`e637` existed. `e637` consolidates backend guards and updates comments and the test fixture.
+Its active Windows Release interpreter implementation is identical to `1ac56d5` (3829 vs 3829,
+0 differing lines); its separate Windows Debug compile closes the configuration break. Checked
+backend selection is covered by source checks, not by a separate Checked build. The delivered `08e031af`
 binary is therefore the measured artifact of this Release code path, not a build produced by the
 documentation commit on this branch.
+
+## Performance scope
+
+These are single-machine Windows x64 Release interpreter measurements, without CPU affinity.
+The final three-round window compares an unconfigured patched runtime with unpatched `474eb8ad`:
+
+| workload | final / baseline elapsed time |
+| --- | --- |
+| TightLoop | 1.03x |
+| CallBoundary | 1.11x |
+| BusinessLoop | 0.97x |
+
+An earlier six-round window measured 0.96x / 1.04x / 0.95x. These windows support low default
+overhead in the measured workloads, not universal zero overhead or a noiseless speedup.
+With deadlines enabled, epoch poll intervals 1 / 100 / 1000 measured about **3.4x–5.3x** elapsed
+time relative to the same build's OFF lanes. Boundary polls and per-opcode accounting remain;
+the interval is not an instruction quota. The accepted roughly 2x deadline tolerance concerns
+time-budget granularity and is not acceptance of CPU overhead.
+
+A separate corrected cross-module delegate workload used three interleaved rounds. The median
+of the per-round minimum-of-seven times was 14.6 ms for the baseline and 14.3 ms for the final
+runtime; their sample-median aggregates were 16.8 ms and 14.6 ms. The original 13.9 ms / 13.9 ms
+headline used minima across rounds. These are distinct statistics, not a universal speed claim.
 
 ## Reproduction
 
@@ -136,6 +160,9 @@ The expected result is a final `PASS` line and exit code 0.
 - Windows x64 Release interpreter only. Linux computed-goto, Wasm and Windows Debug/Checked keep the
   previous backend; Debug is proven to compile, not to execute this backend.
 - No Linux, Wasm, device, AOT, unmanaged-entry, global all-load or JIT/R2R instrumentation evidence.
+- Invalid-raw opcode rejection has structural proof, not a live corrupted-bytecode test. There is
+  no dedicated continuation or calli-group execution fixture; the tail-call and cross-context
+  execution evidence should not be read as coverage of every opcode group.
 - One active callback per session and a single owner thread; a competing callback or thread fails
   closed.
 - Native blocking cannot be interrupted, including a `Sleep` inside a finally block; finalizers run
