@@ -1052,9 +1052,16 @@ static FORCEINLINE bool RuneCLRIsDeadlineTableSafeOpcode(UINT32 opcode) noexcept
     return opcode < INTOP_LAST && s_runeclrDeadlineOpcodeBytes.safe[opcode] != 0;
 }
 
+#if defined(TARGET_WINDOWS)
+// Prototype: one shared out-of-line copy instead of ~370 forced inline copies inside the switch.
+NOINLINE static bool RuneCLRChargeCallbackDeadline(RuneCLRDeadline* deadline, InterpMethodContextFrame* frame,
+                                                   InterpThreadContext* threadContext, UINT32 opcode,
+                                                   const void*& deadlineFrame, bool& deadlineBoundary)
+#else
 static FORCEINLINE bool RuneCLRChargeCallbackDeadline(RuneCLRDeadline* deadline, InterpMethodContextFrame* frame,
                                                       InterpThreadContext* threadContext, UINT32 opcode,
                                                       const void*& deadlineFrame, bool& deadlineBoundary)
+#endif
 {
 
     // Only a terminated deadline converts the cleanup funclet to the bounded budget;
@@ -1104,10 +1111,37 @@ static FORCEINLINE bool RuneCLRChargeCallbackDeadline(RuneCLRDeadline* deadline,
 #define INTOP_CASE(x) LABEL_ ## x:
 #define INTOP_DISPATCH(op) do { opcode = (uint32_t)(op); RUNECLR_CALLBACK_DEADLINE_DISPATCH(); goto *s_dispatchTable[opcode]; } while (0)
 #define INTOP_NEXT INTOP_DISPATCH(ip[0])
+#define RUNECLR_REFRESH_DEADLINE() (runeclrFrameDeadline = RuneCLRResolveCallbackDeadline(pFrame))
+#elif defined(TARGET_WINDOWS) && !defined(DEBUG)
+// Windows Release central-switch backend: the per-frame checked mode is folded into the switch
+// index, so an unbudgeted frame reaches its handler with no mode test. Every opcode emits a
+// shared handler body plus two entry stubs: the unchecked case jumps straight in, the checked
+// case validates the raw opcode, charges once and then jumps in. Consecutive INTOP_CASE groups
+// still share the tail body because each stub jumps to its own label and falls through the next
+// stub chain, and only the checked stub charges.
+static_assert(INTOP_LAST > 0, "interpreter opcode count must be positive");
+static_assert((uint64_t)INTOP_LAST * 3 <= (uint64_t)UINT32_MAX, "interpreter switch index must fit in 32 bits");
+#define RUNECLR_SWITCH_CHECKED(x) ((uint32_t)(x) + (uint32_t)INTOP_LAST)
+#define INTOP_CASE(x) \
+    case (uint32_t)(x): goto RUNECLR_BODY_ ## x; \
+    case RUNECLR_SWITCH_CHECKED(x): \
+        if (opcode != (uint32_t)(x)) goto RUNECLR_INVALID_OPCODE; \
+        if (!RuneCLRChargeCallbackDeadline(runeclrFrameDeadline, pFrame, pThreadContext, opcode, runeclrDeadlineFrame, runeclrDeadlineBoundary)) \
+            goto RUNECLR_DENIED; \
+        goto RUNECLR_BODY_ ## x; \
+    RUNECLR_BODY_ ## x:
+#define INTOP_DISPATCH(op) opcode = (uint32_t)(op); goto SWITCH_OPCODE
+#define INTOP_NEXT break
+#define RUNECLR_REFRESH_DEADLINE() do { \
+    runeclrFrameDeadline = RuneCLRResolveCallbackDeadline(pFrame); \
+    runeclrModeOffset = runeclrFrameDeadline != nullptr ? (uint32_t)INTOP_LAST : 0u; \
+    _ASSERTE((runeclrModeOffset != 0) == (runeclrFrameDeadline != nullptr)); \
+} while (0)
 #else
 #define INTOP_CASE(x) case x:
 #define INTOP_DISPATCH(op) opcode = (uint32_t)(op); goto SWITCH_OPCODE
 #define INTOP_NEXT break
+#define RUNECLR_REFRESH_DEADLINE() (runeclrFrameDeadline = RuneCLRResolveCallbackDeadline(pFrame))
 #endif // USE_COMPUTED_GOTO
 #define INTOP_EXIT_FRAME_NO_LOCALLOC goto EXIT_FRAME
 #define INTOP_EXIT_FRAME do { pThreadContext->frameDataAllocator.PopInfo(pFrame); INTOP_EXIT_FRAME_NO_LOCALLOC; } while (0)
@@ -1735,6 +1769,11 @@ void InterpExecMethod(InterpreterFrame *pInterpreterFrame, InterpMethodContextFr
     bool runeclrDeadlineBoundary = true;
     // Per-frame checked mode, refreshed at every frame transition below and at MAIN_LOOP.
     RuneCLRDeadline* runeclrFrameDeadline = nullptr;
+#if defined(TARGET_WINDOWS) && !defined(DEBUG) && !USE_COMPUTED_GOTO
+    // 0 while the frame is unbudgeted, INTOP_LAST while it must charge. Added to the raw opcode
+    // so the dispatch selects the checked or unchecked entry stub with no per-opcode test.
+    uint32_t runeclrModeOffset = 0;
+#endif
 
 #if USE_COMPUTED_GOTO
     static const void* const s_dispatchTable[] = {
@@ -1747,7 +1786,7 @@ void InterpExecMethod(InterpreterFrame *pInterpreterFrame, InterpMethodContextFr
 
 MAIN_LOOP:
     // Invocation entry, return to a caller frame, catch resume and abort/resume all land here.
-    runeclrFrameDeadline = RuneCLRResolveCallbackDeadline(pFrame);
+    RUNECLR_REFRESH_DEADLINE();
     try
     {
         INSTALL_MANAGED_EXCEPTION_DISPATCHER;
@@ -1760,8 +1799,14 @@ MAIN_LOOP:
             opcode = ip[0];
 SWITCH_OPCODE:
             // Also covers debugger bypass dispatches that jump to this label.
+#if defined(TARGET_WINDOWS)
+            // Widened index: a raw opcode at or above INTOP_LAST can never wrap into the checked
+            // range, and the checked stubs validate the raw opcode before charging.
+            switch ((uint64_t)(uint32_t)opcode + (uint64_t)runeclrModeOffset)
+#else
             RUNECLR_CALLBACK_DEADLINE_DISPATCH();
             switch (opcode)
+#endif
             {
 #endif // !USE_COMPUTED_GOTO
 #ifdef DEBUG
@@ -3798,7 +3843,7 @@ SWITCH_OPCODE:
                                 ShiftDelegateCallArgs(stack, callArgsOffset, sizeOfArgsUpto16ByteAlignment, pTargetMethod->argsSize);
 
                                 UpdateFrameForTailCall(pFrame, targetIp, LOCAL_VAR_ADDR(callArgsOffset, int8_t));
-                                runeclrFrameDeadline = RuneCLRResolveCallbackDeadline(pFrame);
+                                RUNECLR_REFRESH_DEADLINE();
                                 frameNeedsTailcallUpdate = false;
                             }
                             else
@@ -3820,7 +3865,7 @@ SWITCH_OPCODE:
 
                                 pChildFrame->ReInit(pFrame, targetIp, returnValueAddress, LOCAL_VAR_ADDR(callArgsOffset, int8_t));
                                 pFrame = pChildFrame;
-                                runeclrFrameDeadline = RuneCLRResolveCallbackDeadline(pFrame);
+                                RUNECLR_REFRESH_DEADLINE();
                             }
                             // Set execution state for the new frame
                             pMethod = pFrame->startIp->Method;
@@ -3908,7 +3953,7 @@ CALL_INTERP_METHOD:
                         InterpMethod* pTargetMethod = targetIp->Method;
 
                         UpdateFrameForTailCall(pFrame, targetIp, callArgsAddress);
-                        runeclrFrameDeadline = RuneCLRResolveCallbackDeadline(pFrame);
+                        RUNECLR_REFRESH_DEADLINE();
                         frameNeedsTailcallUpdate = false;
                     }
                     else
@@ -3932,7 +3977,7 @@ CALL_INTERP_METHOD:
 
                             pChildFrame->ReInit(pFrame, targetIp, returnValueAddress, callArgsAddress);
                             pFrame = pChildFrame;
-                            runeclrFrameDeadline = RuneCLRResolveCallbackDeadline(pFrame);
+                            RUNECLR_REFRESH_DEADLINE();
                         }
                         assert (((size_t)pFrame->pStack % INTERP_STACK_ALIGNMENT) == 0);
                     }
@@ -4821,7 +4866,7 @@ do                                                                      \
 
                         pChildFrame->ReInit(pFrame, pFrame->startIp, pFrame->pRetVal, pFrame->pStack);
                         pFrame = pChildFrame;
-                        runeclrFrameDeadline = RuneCLRResolveCallbackDeadline(pFrame);
+                        RUNECLR_REFRESH_DEADLINE();
                     }
                     assert (((size_t)pFrame->pStack % INTERP_STACK_ALIGNMENT) == 0);
 
@@ -5186,6 +5231,26 @@ do                                                                      \
                     EEPOLICY_HANDLE_FATAL_ERROR_WITH_MESSAGE(COR_E_EXECUTIONENGINE, W("Unimplemented or invalid interpreter opcode\n"));
                     INTOP_NEXT;
             }
+#if defined(TARGET_WINDOWS)
+            // Shared tails for the checked entry stubs. Normal fall-through never reaches them.
+            continue;
+RUNECLR_DENIED:
+            pFrame->ip = ip;
+            RuneCLRDeadlineTraceBit(0x4);
+            if (pExceptionClauseArgs != nullptr)
+            {
+                RuneCLRDeadlineTraceBit(0x1);
+                if (pExceptionClauseArgs->isCleanup)
+                    RuneCLRDeadlineTraceBit(0x2);
+            }
+            if (pExceptionClauseArgs != nullptr && pExceptionClauseArgs->isCleanup)
+                goto RUNECLR_ABANDON_CLEANUP;
+            INTERP_THROW(kOperationCanceledException);
+            UNREACHABLE();
+RUNECLR_INVALID_OPCODE:
+            EEPOLICY_HANDLE_FATAL_ERROR_WITH_MESSAGE(COR_E_EXECUTIONENGINE, W("Unimplemented or invalid interpreter opcode\n"));
+            UNREACHABLE();
+#endif // TARGET_WINDOWS
 #endif // !USE_COMPUTED_GOTO
         }
         UNINSTALL_UNWIND_AND_CONTINUE_HANDLER;
