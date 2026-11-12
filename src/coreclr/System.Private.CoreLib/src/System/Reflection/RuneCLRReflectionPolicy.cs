@@ -2,6 +2,8 @@
 // The .NET Foundation licenses this file to you under the MIT license.
 
 using System.Diagnostics.CodeAnalysis;
+using System.Runtime.CompilerServices;
+using System.Runtime.InteropServices;
 using System.Threading;
 using System.Reflection.Emit;
 using System.Runtime.Loader;
@@ -9,7 +11,7 @@ using System.Runtime.Loader;
 namespace System.Reflection
 {
     // Private, opt-in reflection experiment. Operation IDs form the versioned host bridge contract.
-    internal static class RuneCLRReflectionPolicy
+    internal static partial class RuneCLRReflectionPolicy
     {
         private static readonly AsyncLocal<Scope?> s_current = new AsyncLocal<Scope?>();
         private static volatile bool s_everEntered;
@@ -17,8 +19,113 @@ namespace System.Reflection
         [ThreadStatic] private static int t_internalDelegateCreation;
         [ThreadStatic] internal static int TrustedResolutionDepth;
         internal const int MaximumUgcImageBytes = 32 * 1024 * 1024;
+        internal const int SessionOriginCapability = 1;
+        private const int MaximumStackOrigins = 16;
+        private static readonly bool s_sessionOriginScan = ReadSessionOriginScanSwitch();
+        private static int s_attachedSessions;
 
         private static int RuneCLR_GetReflectionPolicyVersion() => 4;
+
+        // Additive capability contract. The versioned entry points stay at 4 so the
+        // published host bridge keeps binding; capability bits describe optional support.
+        private static int RuneCLR_GetReflectionPolicyCapabilities()
+        {
+            int capabilities = 0;
+            if (s_sessionOriginScan)
+            {
+                try
+                {
+                    AssemblyLoadContext? ignored = null;
+                    _ = RuneCLR_GetStackLoadContextNative(-1, ObjectHandleOnStack.Create(ref ignored));
+                    capabilities |= SessionOriginCapability;
+                }
+                catch (EntryPointNotFoundException) { }
+            }
+            return capabilities;
+        }
+
+        private static bool ReadSessionOriginScanSwitch() =>
+            !AppContext.TryGetSwitch("RuneCLR.EnableReflectionPolicyOriginScan", out bool enabled) || enabled;
+
+        // Attached sessions are never forgotten: a retired session keeps a fail-closed
+        // tombstone so author frames that still execute cannot silently become unrestricted.
+        private static bool SessionOriginScanActive =>
+            s_sessionOriginScan && Volatile.Read(ref s_attachedSessions) != 0;
+
+        // Returns the skip-th distinct non-default load context executing on this thread.
+        // The runtime reports an incomplete walk instead of truncating an outer owner.
+        private static bool GetStackLoadContext(int skip, [NotNullWhen(true)] out AssemblyLoadContext? context)
+        {
+            // The runtime writes the managed reference into a plain local first; only a
+            // successfully materialised owner is copied out to the caller's slot.
+            AssemblyLoadContext? resolved = null;
+            int status = RuneCLR_GetStackLoadContextNative(skip, ObjectHandleOnStack.Create(ref resolved));
+            context = resolved;
+            if (status != 0)
+                throw new NotSupportedException(status == 1
+                    ? "Too many distinct non-default load contexts execute on this thread for the session-origin policy."
+                    : "The runtime could not inspect this thread for the session-origin policy.");
+            return context is not null;
+        }
+
+        private static void DemandStackOrigins(MemberInfo member, object? receiver, object?[]? arguments,
+            int operation, Scope? ambient)
+        {
+            for (int skip = 0; skip < MaximumStackOrigins; skip++)
+            {
+                if (!GetStackLoadContext(skip, out AssemblyLoadContext? context))
+                    return;
+                Session? session = context.RuneCLRPolicySession;
+                if (session is null || ambient?.Includes(session) == true)
+                    continue;
+                // Enforcement state stays unreachable to author code on this path too.
+                GuardMember(member, member as Type ?? member.DeclaringType);
+                t_checking = true;
+                try
+                {
+                    session.Demand(member, receiver, arguments, operation);
+                    if (operation == 4)
+                        session.Demand(ResolveDispatch((MethodInfo)member, receiver), receiver, arguments, 0);
+                }
+                finally
+                {
+                    t_checking = false;
+                }
+            }
+        }
+
+        private static Session? StackSession(Session? origin)
+        {
+            for (int skip = 0; skip < MaximumStackOrigins; skip++)
+            {
+                if (!GetStackLoadContext(skip, out AssemblyLoadContext? context))
+                    return origin;
+                Session? session = context.RuneCLRPolicySession;
+                if (session is null)
+                    continue;
+                if (origin is not null && !ReferenceEquals(origin, session))
+                    throw new InvalidOperationException("Assembly loads cannot cross UGC policy sessions.");
+                origin = session;
+            }
+            return origin;
+        }
+
+        private static bool HasStackOrigin()
+        {
+            for (int skip = 0; skip < MaximumStackOrigins; skip++)
+            {
+                if (!GetStackLoadContext(skip, out AssemblyLoadContext? context))
+                    return false;
+                if (context.RuneCLRPolicySession is not null)
+                    return true;
+            }
+            return false;
+        }
+
+        // The QCall ABI appends the hidden error-status parameter only when it is declared.
+        [ErrorHandler(typeof(QCallExceptionStatusMarshaller), ErrorLocation.HiddenLastParameter)]
+        [LibraryImport(RuntimeHelpers.QCall, EntryPoint = "RuneCLRReflectionPolicy_GetStackLoadContext")]
+        private static partial int RuneCLR_GetStackLoadContextNative(int skip, ObjectHandleOnStack context);
 
         private static IDisposable RuneCLR_EnterReflectionPolicy(Action<MemberInfo, object?, object?[]?, int> check)
         {
@@ -39,6 +146,10 @@ namespace System.Reflection
             ArgumentNullException.ThrowIfNull(context);
             ArgumentNullException.ThrowIfNull(admit);
             var session = new Session(check, context, admit);
+            // Publish the sticky scan requirement before the owner mapping can be observed,
+            // so a concurrent stack-walk lookup cannot see the owner while scans look disabled.
+            // A failed attach leaves the counter set, which only keeps the scan armed.
+            session.MarkAttached();
             context.RuneCLR_AttachPolicySession(session);
             activate = () => session.Activate(retireSession: false);
             return session;
@@ -55,7 +166,15 @@ namespace System.Reflection
             // explicitly attached session still receives the same admission path.
             if (TrustedResolutionDepth != 0)
                 return attached?.LoadContext();
-            return (current ?? attached)?.LoadContext();
+            Session? origin = current ?? attached;
+            int attachedCount = Volatile.Read(ref s_attachedSessions);
+            if (s_sessionOriginScan && attachedCount != 0 && (origin is null || attachedCount > 1))
+            {
+                // A present ambient or requested context must not mask another actual
+                // owner on the stack; a different owner refuses the load.
+                origin = StackSession(origin);
+            }
+            return origin?.LoadContext();
         }
 
         internal static bool InternalDelegateCreationAllowed => t_internalDelegateCreation > 0;
@@ -160,7 +279,19 @@ namespace System.Reflection
                 throw new NotSupportedException(route + " is unsupported while a reflection policy is active.");
         }
 
-        internal static bool HasScope => s_everEntered && s_current.Value is not null;
+        internal static bool HasScope
+        {
+            get
+            {
+                if (!s_everEntered)
+                    return false;
+                if (s_current.Value is not null)
+                    return true;
+                if (!SessionOriginScanActive)
+                    return false;
+                return HasStackOrigin();
+            }
+        }
 
         [UnconditionalSuppressMessage("ReflectionAnalysis", "IL2060:UnrecognizedReflectionPattern",
             Justification = "Rebinds an existing closed invocation's generic arguments to its runtime-resolved implementation. Missing metadata fails closed.")]
@@ -198,14 +329,8 @@ namespace System.Reflection
             return target;
         }
 
-        private static void CheckMember(MemberInfo member, object? receiver, object?[]? arguments, int operation)
+        private static void GuardMember(MemberInfo member, Type? declaring)
         {
-            if (!s_everEntered)
-                return;
-            Scope? scope = s_current.Value;
-            if (scope is null)
-                return;
-            Type? declaring = member as Type ?? member.DeclaringType;
             for (Type? enclosing = declaring; enclosing is not null; enclosing = enclosing.DeclaringType)
                 if (enclosing == typeof(RuneCLRReflectionPolicy) ||
                     enclosing == typeof(InvokerEmitUtil) ||
@@ -217,18 +342,38 @@ namespace System.Reflection
                 throw new InvalidOperationException("Reflection cannot access the UGC loader's enforcement state.");
             if (t_checking)
                 throw new InvalidOperationException("A reflection-policy callback cannot recursively invoke reflection.");
+        }
 
-            t_checking = true;
-            try
+        private static void CheckMember(MemberInfo member, object? receiver, object?[]? arguments, int operation)
+        {
+            if (!s_everEntered)
+                return;
+            Scope? scope = s_current.Value;
+            int attachedCount = Volatile.Read(ref s_attachedSessions);
+            if (scope is not null)
             {
-                scope.Demand(member, receiver, arguments, operation);
-                if (operation == 4)
-                    scope.Demand(ResolveDispatch((MethodInfo)member, receiver), receiver, arguments, 0);
+                GuardMember(member, member as Type ?? member.DeclaringType);
+                t_checking = true;
+                try
+                {
+                    scope.Demand(member, receiver, arguments, operation);
+                    if (operation == 4)
+                        scope.Demand(ResolveDispatch((MethodInfo)member, receiver), receiver, arguments, 0);
+                }
+                finally
+                {
+                    t_checking = false;
+                }
+                // Normal flowing execution still owes every other actual owner on the stack.
+                // A single attached owner already present in this chain cannot be masked.
+                if (s_sessionOriginScan && attachedCount != 0 &&
+                    (attachedCount > 1 || !scope.IncludesAttachedSession()))
+                    DemandStackOrigins(member, receiver, arguments, operation, scope);
+                return;
             }
-            finally
-            {
-                t_checking = false;
-            }
+            if (!s_sessionOriginScan || attachedCount == 0)
+                return;
+            DemandStackOrigins(member, receiver, arguments, operation, ambient: null);
         }
 
         internal sealed class Session : IDisposable
@@ -237,15 +382,24 @@ namespace System.Reflection
             private Action<MemberInfo, object?, object?[]?, int>? _check;
             private AssemblyLoadContext? _context;
             private Action<byte[], string?>? _admit;
+            private readonly bool _ownsContext;
 
             internal Session(Action<MemberInfo, object?, object?[]?, int> check) => _check = check;
+
+            // Counted once per attached context and never forgotten, so a retired session
+            // cannot silently become unrestricted while its author frames still execute.
+            internal void MarkAttached() => Interlocked.Increment(ref s_attachedSessions);
 
             internal Session(Action<MemberInfo, object?, object?[]?, int> check, AssemblyLoadContext context,
                 Action<byte[], string?> admit) : this(check)
             {
                 _context = context;
                 _admit = admit;
+                _ownsContext = true;
             }
+
+            // Identity of an attached owner survives retirement; a retired owner still fails closed.
+            internal bool OwnsContext => _ownsContext;
 
             internal AssemblyLoadContext? LoadContext()
             {
@@ -293,6 +447,9 @@ namespace System.Reflection
             {
                 lock (_gate)
                 {
+                    // The load context mapping stays as a retired tombstone: later checks
+                    // fail closed instead of treating still-executing author frames as trusted.
+                    // No evaluator, admission callback or load context remains reachable here.
                     _check = null;
                     _context = null;
                     _admit = null;
@@ -321,6 +478,21 @@ namespace System.Reflection
                 // Nested scopes can narrow the outer decision but cannot replace it with a wider policy.
                 _previous?.Demand(member, receiver, arguments, operation);
                 _session.Demand(member, receiver, arguments, operation);
+            }
+
+            internal bool Includes(Session session)
+            {
+                if (ReferenceEquals(_session, session))
+                    return true;
+                return _previous?.Includes(session) == true;
+            }
+
+            // True when the ambient chain already governs the only attached context owner.
+            internal bool IncludesAttachedSession()
+            {
+                if (_session.OwnsContext)
+                    return true;
+                return _previous?.IncludesAttachedSession() == true;
             }
 
             internal Session? LoadSession()
