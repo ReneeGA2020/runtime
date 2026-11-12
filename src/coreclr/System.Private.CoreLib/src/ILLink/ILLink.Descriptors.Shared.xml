@@ -2,6 +2,7 @@
   <assembly fullname="System.Private.CoreLib">
     <type fullname="System.Reflection.RuneCLRReflectionPolicy">
       <method name="RuneCLR_GetReflectionPolicyVersion" />
+      <method name="RuneCLR_GetReflectionPolicyCapabilities" />
       <method name="RuneCLR_EnterReflectionPolicy" />
       <method name="RuneCLR_CreateReflectionPolicySession" />
     </type>
