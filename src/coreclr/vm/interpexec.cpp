@@ -14,6 +14,7 @@
 #include "comdelegate.h"
 #include "gchelpers.inl"
 #include "arraynative.inl"
+#include "runeclrdeadline.h"
 
 #ifdef TARGET_WASM
 extern "C" void SamplingProfiler_OnSamplepoint();
@@ -770,6 +771,7 @@ typedef void (*HELPER_FTN_V_PP)(void*, void*);
 
 InterpThreadContext::InterpThreadContext()
 {
+    runeclrCleanupOwner = nullptr;
     pStackStart = pStackPointer = (int8_t*)VMToOSInterface::AlignedAllocate(INTERP_STACK_SIZE, INTERP_STACK_SIZE);
     pStackEnd = pStackStart + INTERP_STACK_SIZE;
 #ifdef DEBUGGING_SUPPORTED
@@ -907,6 +909,238 @@ NOINLINE static void InterpThrow(InterpMethodContextFrame* pFrame, const int32_t
 #define NULL_CHECK(o) do { if ((o) == NULL) { INTERP_THROW(kNullReferenceException); } } while (0)
 #define INTERP_THROW(exType) InterpThrow(pFrame, ip, exType)
 
+// Private RuneCLR experiment: opt-in callback deadline checkpoint.
+//
+// The frame resolves its binder once (frame cache below), then each dispatch pays
+// one pointer load. A binder without a configured deadline - the default binder,
+// the host's own code and every stock application - keeps the unchanged path.
+static FORCEINLINE RuneCLRDeadline* RuneCLRResolveCallbackDeadline(InterpMethodContextFrame* frame)
+{
+    LIMITED_METHOD_CONTRACT;
+    RuneCLRDeadline* cached = frame->runeclrCallbackDeadline;
+    if (cached != nullptr)
+        return cached == &g_runeCLRDeadlineNone ? nullptr : cached;
+
+    // Same-definition fast path: the key is the definition owner, i.e. the callee's
+    // MethodDesc->GetModule() being pointer-equal to the parent's. That proves the same binder, and
+    // G1 makes the resolved answer final for the binder's lifetime:
+    //   * a cached deadline pointer means the binder was configured, or was observed while
+    //     Configuring. The latter is inherited as CHECKED: ClaimExecutionMode answers true for the
+    //     Configuring window, so the frame keeps charging and fails closed until the writer
+    //     publishes Configured or rolls back to Fresh. Inheriting the pointer therefore never
+    //     downgrades a frame to unchecked, including across the rollback window.
+    //   * a cached None means either the binder is not a custom binder at all (the default binder
+    //     is structurally without a deadline) or the custom binder was already claimed Executing,
+    //     which is terminal for configuration. It is not "permanently Configuring".
+    // Any other case (root frame, different module, unresolved parent) falls back to the full
+    // GetPEAssembly/GetBinder/Claim resolver below.
+    InterpMethodContextFrame* parent = frame->pParent;
+    if (parent != nullptr)
+    {
+        RuneCLRDeadline* parentCached = parent->runeclrCallbackDeadline;
+        if (parentCached != nullptr)
+        {
+            MethodDesc* method = frame->startIp->Method->methodHnd;
+            MethodDesc* parentMethod = parent->startIp->Method->methodHnd;
+            if (method->GetModule() == parentMethod->GetModule())
+            {
+                frame->runeclrCallbackDeadline = parentCached;
+                return parentCached == &g_runeCLRDeadlineNone ? nullptr : parentCached;
+            }
+        }
+    }
+
+    RuneCLRDeadline* deadline = nullptr;
+    MethodDesc* method = frame->startIp->Method->methodHnd;
+    AssemblyBinder* binder = method->GetModule()->GetPEAssembly()->GetAssemblyBinder();
+    if (binder != nullptr)
+    {
+        RuneCLRDeadline* candidate = binder->GetRuneCLRCallbackDeadline();
+        // ClaimExecutionMode is the G1 first-frame gate: it either makes this binder immutable
+        // OFF (and returns false) or reports that this frame must charge.
+        if (candidate != nullptr && candidate->ClaimExecutionMode())
+            deadline = candidate;
+    }
+
+    frame->runeclrCallbackDeadline = deadline == nullptr ? &g_runeCLRDeadlineNone : deadline;
+    return deadline;
+}
+
+// Scalar opcodes that cannot run unbounded native work between two polls. Any
+// other opcode (call, allocation, safepoint, helper) forces a poll on the next
+// dispatch so a long native operation cannot postpone the deadline check.
+struct RuneCLRDeadlineOpcodeBytes
+{
+    unsigned char safe[INTOP_LAST];
+    constexpr RuneCLRDeadlineOpcodeBytes() noexcept : safe{}
+    {
+        safe[INTOP_LDC_I4] = 1;
+        safe[INTOP_LDC_I4_0] = 1;
+        safe[INTOP_LDC_I8] = 1;
+        safe[INTOP_LDC_I8_0] = 1;
+        safe[INTOP_MOV_4] = 1;
+        safe[INTOP_MOV_8] = 1;
+        safe[INTOP_ADD_I4] = 1;
+        safe[INTOP_ADD_I8] = 1;
+        safe[INTOP_ADD_I4_IMM] = 1;
+        safe[INTOP_ADD_I8_IMM] = 1;
+        safe[INTOP_SUB_I4] = 1;
+        safe[INTOP_SUB_I8] = 1;
+        safe[INTOP_MUL_I4] = 1;
+        safe[INTOP_MUL_I8] = 1;
+        safe[INTOP_AND_I4] = 1;
+        safe[INTOP_AND_I8] = 1;
+        safe[INTOP_OR_I4] = 1;
+        safe[INTOP_OR_I8] = 1;
+        safe[INTOP_XOR_I4] = 1;
+        safe[INTOP_XOR_I8] = 1;
+        safe[INTOP_BR] = 1;
+        safe[INTOP_BRFALSE_I4] = 1;
+        safe[INTOP_BRFALSE_I8] = 1;
+        safe[INTOP_BRTRUE_I4] = 1;
+        safe[INTOP_BRTRUE_I8] = 1;
+        safe[INTOP_BEQ_I4] = 1;
+        safe[INTOP_BEQ_I8] = 1;
+        safe[INTOP_BNE_UN_I4] = 1;
+        safe[INTOP_BNE_UN_I8] = 1;
+        safe[INTOP_BGE_I4] = 1;
+        safe[INTOP_BGE_I8] = 1;
+        safe[INTOP_BGT_I4] = 1;
+        safe[INTOP_BGT_I8] = 1;
+        safe[INTOP_BLE_I4] = 1;
+        safe[INTOP_BLE_I8] = 1;
+        safe[INTOP_BLT_I4] = 1;
+        safe[INTOP_BLT_I8] = 1;
+        safe[INTOP_CEQ_I4] = 1;
+        safe[INTOP_CEQ_I8] = 1;
+        safe[INTOP_CGT_I4] = 1;
+        safe[INTOP_CGT_I8] = 1;
+        safe[INTOP_CLT_I4] = 1;
+        safe[INTOP_CLT_I8] = 1;
+        safe[INTOP_CONV_I8_I4] = 1;
+        safe[INTOP_CONV_I8_U4] = 1;
+        safe[INTOP_CONV_U8_U4] = 1;
+        safe[INTOP_CONV_NI] = 1;
+        safe[INTOP_MOV_I4_I1] = 1;
+        safe[INTOP_MOV_I4_U1] = 1;
+        safe[INTOP_MOV_I4_I2] = 1;
+        safe[INTOP_MOV_I4_U2] = 1;
+        safe[INTOP_LDC_R4] = 1;
+        safe[INTOP_LDC_R8] = 1;
+        safe[INTOP_NEG_I4] = 1;
+        safe[INTOP_NEG_I8] = 1;
+        safe[INTOP_NEG_R4] = 1;
+        safe[INTOP_NEG_R8] = 1;
+        safe[INTOP_NOT_I4] = 1;
+        safe[INTOP_NOT_I8] = 1;
+        safe[INTOP_ADD_R4] = 1;
+        safe[INTOP_ADD_R8] = 1;
+        safe[INTOP_SUB_R4] = 1;
+        safe[INTOP_SUB_R8] = 1;
+        safe[INTOP_MUL_R4] = 1;
+        safe[INTOP_MUL_R8] = 1;
+        safe[INTOP_DIV_I4] = 1;
+        safe[INTOP_DIV_I8] = 1;
+        safe[INTOP_DIV_UN_I4] = 1;
+        safe[INTOP_DIV_UN_I8] = 1;
+        safe[INTOP_DIV_R4] = 1;
+        safe[INTOP_DIV_R8] = 1;
+        safe[INTOP_REM_I4] = 1;
+        safe[INTOP_REM_I8] = 1;
+        safe[INTOP_REM_UN_I4] = 1;
+        safe[INTOP_REM_UN_I8] = 1;
+        safe[INTOP_REM_R4] = 1;
+        safe[INTOP_REM_R8] = 1;
+        safe[INTOP_SHR_I4] = 1;
+        safe[INTOP_SHR_I8] = 1;
+        safe[INTOP_SHR_UN_I4] = 1;
+        safe[INTOP_SHR_UN_I8] = 1;
+        safe[INTOP_SHL_I4] = 1;
+        safe[INTOP_SHL_I8] = 1;
+        safe[INTOP_CEQ_R4] = 1;
+        safe[INTOP_CEQ_R8] = 1;
+        safe[INTOP_CGT_R4] = 1;
+        safe[INTOP_CGT_R8] = 1;
+        safe[INTOP_CGT_UN_I4] = 1;
+        safe[INTOP_CGT_UN_I8] = 1;
+        safe[INTOP_CLT_R4] = 1;
+        safe[INTOP_CLT_R8] = 1;
+        safe[INTOP_CLT_UN_I4] = 1;
+        safe[INTOP_CLT_UN_I8] = 1;
+        safe[INTOP_BEQ_R4] = 1;
+        safe[INTOP_BEQ_R8] = 1;
+        safe[INTOP_BGE_R4] = 1;
+        safe[INTOP_BGE_R8] = 1;
+    }
+};
+
+static constexpr RuneCLRDeadlineOpcodeBytes s_runeclrDeadlineOpcodeBytes{};
+
+static FORCEINLINE bool RuneCLRIsDeadlineTableSafeOpcode(UINT32 opcode) noexcept
+{
+    return opcode < INTOP_LAST && s_runeclrDeadlineOpcodeBytes.safe[opcode] != 0;
+}
+
+// Single compile-time condition for the Windows Release central-switch backend that folds the
+// per-frame mode into the switch index. Every guard in this file (helper linkage, entry macros,
+// mode-offset declaration, dispatch site, shared tails) uses this one macro so a configuration can
+// never end up with a half-enabled backend. Windows Debug/Checked, Wasm and every computed-goto
+// build (Linux Release) keep the previous behaviour.
+#if defined(TARGET_WINDOWS) && !defined(DEBUG) && !defined(TARGET_WASM)
+#define RUNECLR_SWITCH_MODE_DISPATCH 1
+#else
+#define RUNECLR_SWITCH_MODE_DISPATCH 0
+#endif
+
+#if RUNECLR_SWITCH_MODE_DISPATCH
+// Prototype: one shared out-of-line copy instead of ~370 forced inline copies inside the switch.
+NOINLINE static bool RuneCLRChargeCallbackDeadline(RuneCLRDeadline* deadline, InterpMethodContextFrame* frame,
+                                                   InterpThreadContext* threadContext, UINT32 opcode,
+                                                   const void*& deadlineFrame, bool& deadlineBoundary)
+#else
+static FORCEINLINE bool RuneCLRChargeCallbackDeadline(RuneCLRDeadline* deadline, InterpMethodContextFrame* frame,
+                                                      InterpThreadContext* threadContext, UINT32 opcode,
+                                                      const void*& deadlineFrame, bool& deadlineBoundary)
+#endif
+{
+
+    // Only a terminated deadline converts the cleanup funclet to the bounded budget;
+    // an ordinary finally of a running callback keeps the normal deadline check.
+    if (deadline->IsTerminated() && threadContext->runeclrCleanupOwner == deadline)
+    {
+        RuneCLRDeadlineTraceBit(0x8);
+        bool charged = deadline->TryChargeCleanup(GetThread());
+        if (charged)
+            RuneCLRDeadlineTraceBit(0x10);
+        return charged;
+    }
+
+    bool safe = RuneCLRIsDeadlineTableSafeOpcode(opcode);
+    bool boundary = deadlineBoundary || deadlineFrame != frame || !safe;
+    deadlineFrame = frame;
+    deadlineBoundary = !safe;
+    return deadline->Check(GetThread(), boundary);
+}
+
+// A denied ordinary body throws under the existing managed-dispatch handlers.
+// Only an actual EH finally/fault invocation may abandon its remaining author
+// cleanup using the normal native funclet return; callbacks do not gain that exit.
+#define RUNECLR_CALLBACK_DEADLINE_DISPATCH() do { \
+    if (runeclrFrameDeadline != nullptr && \
+        !RuneCLRChargeCallbackDeadline(runeclrFrameDeadline, pFrame, pThreadContext, opcode, runeclrDeadlineFrame, runeclrDeadlineBoundary)) { \
+        pFrame->ip = ip; \
+        RuneCLRDeadlineTraceBit(0x4); \
+        if (pExceptionClauseArgs != nullptr) { \
+            RuneCLRDeadlineTraceBit(0x1); \
+            if (pExceptionClauseArgs->isCleanup) \
+                RuneCLRDeadlineTraceBit(0x2); \
+        } \
+        if (pExceptionClauseArgs != nullptr && pExceptionClauseArgs->isCleanup) \
+            goto RUNECLR_ABANDON_CLEANUP; \
+        INTERP_THROW(kOperationCanceledException); \
+    } \
+} while (0)
+
 // When enabled, each opcode dispatches directly to the next one via an indirect goto,
 // avoiding the overhead of the central switch dispatch.
 #if !defined(TARGET_WINDOWS) && !defined(TARGET_WASM) && !defined(DEBUG)
@@ -915,12 +1149,39 @@ NOINLINE static void InterpThrow(InterpMethodContextFrame* pFrame, const int32_t
 
 #if USE_COMPUTED_GOTO
 #define INTOP_CASE(x) LABEL_ ## x:
-#define INTOP_DISPATCH(op) opcode = (uint32_t)(op); goto *s_dispatchTable[opcode]
+#define INTOP_DISPATCH(op) do { opcode = (uint32_t)(op); RUNECLR_CALLBACK_DEADLINE_DISPATCH(); goto *s_dispatchTable[opcode]; } while (0)
 #define INTOP_NEXT INTOP_DISPATCH(ip[0])
+#define RUNECLR_REFRESH_DEADLINE() (runeclrFrameDeadline = RuneCLRResolveCallbackDeadline(pFrame))
+#elif RUNECLR_SWITCH_MODE_DISPATCH
+// Windows Release central-switch backend: the per-frame checked mode is folded into the switch
+// index, so an unbudgeted frame reaches its handler with no mode test. Every opcode emits a
+// shared handler body plus two entry stubs: the unchecked case jumps straight in, the checked
+// case validates the raw opcode, charges once and then jumps in. Consecutive INTOP_CASE groups
+// still share the tail body because each stub jumps to its own label and falls through the next
+// stub chain, and only the checked stub charges.
+static_assert(INTOP_LAST > 0, "interpreter opcode count must be positive");
+static_assert((uint64_t)INTOP_LAST * 3 <= (uint64_t)UINT32_MAX, "interpreter switch index must fit in 32 bits");
+#define RUNECLR_SWITCH_CHECKED(x) ((uint32_t)(x) + (uint32_t)INTOP_LAST)
+#define INTOP_CASE(x) \
+    case (uint32_t)(x): goto RUNECLR_BODY_ ## x; \
+    case RUNECLR_SWITCH_CHECKED(x): \
+        if (opcode != (uint32_t)(x)) goto RUNECLR_INVALID_OPCODE; \
+        if (!RuneCLRChargeCallbackDeadline(runeclrFrameDeadline, pFrame, pThreadContext, opcode, runeclrDeadlineFrame, runeclrDeadlineBoundary)) \
+            goto RUNECLR_DENIED; \
+        goto RUNECLR_BODY_ ## x; \
+    RUNECLR_BODY_ ## x:
+#define INTOP_DISPATCH(op) opcode = (uint32_t)(op); goto SWITCH_OPCODE
+#define INTOP_NEXT break
+#define RUNECLR_REFRESH_DEADLINE() do { \
+    runeclrFrameDeadline = RuneCLRResolveCallbackDeadline(pFrame); \
+    runeclrModeOffset = runeclrFrameDeadline != nullptr ? (uint32_t)INTOP_LAST : 0u; \
+    _ASSERTE((runeclrModeOffset != 0) == (runeclrFrameDeadline != nullptr)); \
+} while (0)
 #else
 #define INTOP_CASE(x) case x:
 #define INTOP_DISPATCH(op) opcode = (uint32_t)(op); goto SWITCH_OPCODE
 #define INTOP_NEXT break
+#define RUNECLR_REFRESH_DEADLINE() (runeclrFrameDeadline = RuneCLRResolveCallbackDeadline(pFrame))
 #endif // USE_COMPUTED_GOTO
 #define INTOP_EXIT_FRAME_NO_LOCALLOC goto EXIT_FRAME
 #define INTOP_EXIT_FRAME do { pThreadContext->frameDataAllocator.PopInfo(pFrame); INTOP_EXIT_FRAME_NO_LOCALLOC; } while (0)
@@ -1254,6 +1515,7 @@ extern "C" ContinuationObject* AsyncHelpers_ResumeInterpreterContinuationWorker(
     memset(sp, 0, pMethod->allocaSize);
     *(Object**)(sp + pSuspendData->continuationArgOffset) = OBJECTREFToObject(contRef);
 
+    frames.interpMethodContextFrame.ResetRuneCLRCallbackDeadline();
     frames.interpMethodContextFrame.startIp = pSuspendData->methodStartIP;
     frames.interpMethodContextFrame.pStack = sp;
 
@@ -1542,6 +1804,16 @@ void InterpExecMethod(InterpreterFrame *pInterpreterFrame, InterpMethodContextFr
     bool frameNeedsTailcallUpdate = false;
     MethodDesc* targetMethod;
     uint32_t opcode;
+    InterpMethodContextFrame* const runeclrInvocationFrame = pFrame;
+    const void* runeclrDeadlineFrame = nullptr;
+    bool runeclrDeadlineBoundary = true;
+    // Per-frame checked mode, refreshed at every frame transition below and at MAIN_LOOP.
+    RuneCLRDeadline* runeclrFrameDeadline = nullptr;
+#if RUNECLR_SWITCH_MODE_DISPATCH
+    // 0 while the frame is unbudgeted, INTOP_LAST while it must charge. Added to the raw opcode
+    // so the dispatch selects the checked or unchecked entry stub with no per-opcode test.
+    uint32_t runeclrModeOffset = 0;
+#endif
 
 #if USE_COMPUTED_GOTO
     static const void* const s_dispatchTable[] = {
@@ -1553,6 +1825,8 @@ void InterpExecMethod(InterpreterFrame *pInterpreterFrame, InterpMethodContextFr
 #endif // USE_COMPUTED_GOTO
 
 MAIN_LOOP:
+    // Invocation entry, return to a caller frame, catch resume and abort/resume all land here.
+    RUNECLR_REFRESH_DEADLINE();
     try
     {
         INSTALL_MANAGED_EXCEPTION_DISPATCHER;
@@ -1564,7 +1838,15 @@ MAIN_LOOP:
 #else
             opcode = ip[0];
 SWITCH_OPCODE:
+            // Also covers debugger bypass dispatches that jump to this label.
+#if RUNECLR_SWITCH_MODE_DISPATCH
+            // Widened index: a raw opcode at or above INTOP_LAST can never wrap into the checked
+            // range, and the checked stubs validate the raw opcode before charging.
+            switch ((uint64_t)(uint32_t)opcode + (uint64_t)runeclrModeOffset)
+#else
+            RUNECLR_CALLBACK_DEADLINE_DISPATCH();
             switch (opcode)
+#endif
             {
 #endif // !USE_COMPUTED_GOTO
 #ifdef DEBUG
@@ -3599,7 +3881,9 @@ SWITCH_OPCODE:
                             if (frameNeedsTailcallUpdate)
                             {
                                 ShiftDelegateCallArgs(stack, callArgsOffset, sizeOfArgsUpto16ByteAlignment, pTargetMethod->argsSize);
+
                                 UpdateFrameForTailCall(pFrame, targetIp, LOCAL_VAR_ADDR(callArgsOffset, int8_t));
+                                RUNECLR_REFRESH_DEADLINE();
                                 frameNeedsTailcallUpdate = false;
                             }
                             else
@@ -3618,8 +3902,10 @@ SWITCH_OPCODE:
                                     CompilerBarrier();
                                     pFrame->pNext = pChildFrame;
                                 }
+
                                 pChildFrame->ReInit(pFrame, targetIp, returnValueAddress, LOCAL_VAR_ADDR(callArgsOffset, int8_t));
                                 pFrame = pChildFrame;
+                                RUNECLR_REFRESH_DEADLINE();
                             }
                             // Set execution state for the new frame
                             pMethod = pFrame->startIp->Method;
@@ -3705,7 +3991,9 @@ CALL_INTERP_METHOD:
                         BrowserProfiler_OnMethodLeave(pMethod->methodHnd);
 #endif
                         InterpMethod* pTargetMethod = targetIp->Method;
+
                         UpdateFrameForTailCall(pFrame, targetIp, callArgsAddress);
+                        RUNECLR_REFRESH_DEADLINE();
                         frameNeedsTailcallUpdate = false;
                     }
                     else
@@ -3726,8 +4014,10 @@ CALL_INTERP_METHOD:
                                 CompilerBarrier();
                                 pFrame->pNext = pChildFrame;
                             }
+
                             pChildFrame->ReInit(pFrame, targetIp, returnValueAddress, callArgsAddress);
                             pFrame = pChildFrame;
+                            RUNECLR_REFRESH_DEADLINE();
                         }
                         assert (((size_t)pFrame->pStack % INTERP_STACK_ALIGNMENT) == 0);
                     }
@@ -4613,8 +4903,10 @@ do                                                                      \
                             pFrame->pNext = pChildFrame;
                         }
                         // Set the frame to the same values as the caller frame.
+
                         pChildFrame->ReInit(pFrame, pFrame->startIp, pFrame->pRetVal, pFrame->pStack);
                         pFrame = pChildFrame;
+                        RUNECLR_REFRESH_DEADLINE();
                     }
                     assert (((size_t)pFrame->pStack % INTERP_STACK_ALIGNMENT) == 0);
 
@@ -4979,6 +5271,26 @@ do                                                                      \
                     EEPOLICY_HANDLE_FATAL_ERROR_WITH_MESSAGE(COR_E_EXECUTIONENGINE, W("Unimplemented or invalid interpreter opcode\n"));
                     INTOP_NEXT;
             }
+#if RUNECLR_SWITCH_MODE_DISPATCH
+            // Shared tails for the checked entry stubs. Normal fall-through never reaches them.
+            continue;
+RUNECLR_DENIED:
+            pFrame->ip = ip;
+            RuneCLRDeadlineTraceBit(0x4);
+            if (pExceptionClauseArgs != nullptr)
+            {
+                RuneCLRDeadlineTraceBit(0x1);
+                if (pExceptionClauseArgs->isCleanup)
+                    RuneCLRDeadlineTraceBit(0x2);
+            }
+            if (pExceptionClauseArgs != nullptr && pExceptionClauseArgs->isCleanup)
+                goto RUNECLR_ABANDON_CLEANUP;
+            INTERP_THROW(kOperationCanceledException);
+            UNREACHABLE();
+RUNECLR_INVALID_OPCODE:
+            EEPOLICY_HANDLE_FATAL_ERROR_WITH_MESSAGE(COR_E_EXECUTIONENGINE, W("Unimplemented or invalid interpreter opcode\n"));
+            UNREACHABLE();
+#endif // RUNECLR_SWITCH_MODE_DISPATCH
 #endif // !USE_COMPUTED_GOTO
         }
         UNINSTALL_UNWIND_AND_CONTINUE_HANDLER;
@@ -5064,6 +5376,23 @@ RESUME_AFTER_CATCH:
     }
 
     UNREACHABLE();
+
+RUNECLR_ABANDON_CLEANUP:
+    // No native/trusted frame is skipped. This invocation is the real EH
+    // finally/fault funclet; its worker still performs GCPROTECT_END and Pop.
+    // Drop only the interpreter children allocated in this invocation. No GC
+    // may occur between dropping their roots and the existing exit path.
+    _ASSERTE(pExceptionClauseArgs != nullptr && pExceptionClauseArgs->isCleanup);
+    while (pFrame != runeclrInvocationFrame)
+    {
+        _ASSERTE(pFrame != nullptr);
+        pThreadContext->frameDataAllocator.PopInfo(pFrame);
+        pFrame->ip = nullptr;
+        pFrame = pFrame->pParent;
+    }
+    pThreadContext->frameDataAllocator.PopInfo(pFrame);
+    pFrame->ip = nullptr;
+    _ASSERTE(pFrame->pParent == nullptr);
 
 EXIT_FRAME:
     // Exit the current frame, MAKE CERTAIN not to trigger any GC between here and the return, since the interpreter

@@ -13,6 +13,18 @@ The fork's default branch keeps tracking upstream and is not modified by this po
   **not** include the later instruction-meter, terminal-prototype, batch-interval,
   mobile or callback-epoch patch stacks; those remain separate experiments.
 
+## Private callback-epoch increment (2026-11-12)
+
+The optional callback-deadline experiment is published separately as
+`runeclr/optional-callback-epoch-integration-final-20261112`, a documentation-only descendant of
+tested code commit `e637bd791bd824b3a8118fca47073f6390bcb52a` (measured against `runeclr/dev` at
+`474eb8ad`). It is **not** promoted into `runeclr/dev` and does not enable deadlines by default: the clock
+path stays the default, the interpreter checkpoint only charges a configured callback, and the
+runtime owns no timer or thread. The private version-1 ABI, the configure-before-first-execution
+contract, the recorded Windows x64 evidence and the limits are in
+[the callback-epoch document](runeclr-callback-epoch.md). The initial baseline recorded below
+stays the historical record for this branch.
+
 ## Cadence
 
 Merge Microsoft upstream **every two weeks, Monday 10:00 Asia/Shanghai**. The

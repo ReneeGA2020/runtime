@@ -23,6 +23,7 @@
 #include "interoputil.h"
 #include "frames.h"
 #include "typeparse.h"
+#include "runeclrdeadline.h"
 #include "encee.h"
 #include "threadsuspend.h"
 #include "stackwalk.h"
@@ -1306,6 +1307,133 @@ extern "C" INT32 QCALLTYPE AssemblyNative_RuneCLRGetExecutionPolicy(INT_PTR ptrN
     policy = binder->RuneCLRRequiresInterpreter() ? 1 : 0;
     END_QCALL;
     return policy;
+}
+
+// Private RuneCLR experiment: the trusted host owns the only epoch ticker. The runtime
+// creates no timer and no thread, so a frozen or absent ticker simply stops advancing
+// the epoch (a liveness gap) instead of preempting anything.
+std::atomic<INT64> g_runeCLREpoch{0};
+std::atomic<INT64> g_runeCLREpochPeriodMicros{0};
+std::atomic<LONG> g_runeCLRDeadlineFuncletSeen{0};
+std::atomic<LONG> g_runeCLRDeadlineTrace{0};
+RuneCLRDeadline g_runeCLRDeadlineNone;
+
+// Operations: 0 version, 1 configure clock deadline, 2 begin, 3 end, 4 query field,
+// 5 configure epoch deadline, 6 declare epoch period, 7 tick epoch, 8 read epoch,
+// 9 capabilities, 10 cleanup budget. 0/6/7/8/9 need no binder; the rest need a
+// custom interpreter-required binder that carries a deadline.
+extern "C" INT64 QCALLTYPE AssemblyNative_RuneCLRDeadline(INT_PTR ptrNativeAssemblyBinder, INT32 operation, INT64 value, INT32 interval, QCallExceptionStatus* qcallError)
+{
+    QCALL_CONTRACT;
+    INT64 result = 0;
+    BEGIN_QCALL;
+#ifndef FEATURE_INTERPRETER
+    COMPlusThrowNonLocalized(kPlatformNotSupportedException, W("Callback deadlines require the interpreter build of this runtime."));
+#else
+    if (operation == 0)
+    {
+        result = 1;
+    }
+    else if (operation == 9)
+    {
+        // bit0: v1 clock deadline, bit1: opt-in epoch mode.
+        result = 3;
+    }
+    else if (operation == 6)
+    {
+        if (!RuneCLRDeclareEpochPeriod(value))
+            COMPlusThrow(kArgumentOutOfRangeException);
+        result = 1;
+    }
+    else if (operation == 7)
+    {
+        result = RuneCLRTickEpoch();
+    }
+    else if (operation == 8)
+    {
+        result = g_runeCLREpoch.load(std::memory_order_acquire);
+    }
+    else
+    {
+        if (ptrNativeAssemblyBinder == 0)
+            COMPlusThrow(kInvalidOperationException);
+        AssemblyBinder* binder = reinterpret_cast<AssemblyBinder*>(ptrNativeAssemblyBinder);
+        RuneCLRDeadline* deadline = binder->GetRuneCLRCallbackDeadline();
+        if (deadline == nullptr)
+            COMPlusThrowNonLocalized(kPlatformNotSupportedException, W("This load context does not carry a callback deadline."));
+        // Operation policy: 1/2/5/10 (configure clock, begin, configure epoch, cleanup budget) are
+        // only meaningful for a custom interpreter-required context, so a binder without that
+        // policy is rejected before anything is touched; 3 (end) validates the calling thread's
+        // active owner and token through End(); 4 (query) intentionally keeps the v1 diagnostic
+        // contract (raw known fields, -1 for unknown fields, no owner check and never throwing)
+        // and must not be guarded in a future consistency edit.
+        switch (operation)
+        {
+            case 1:
+                // Policy: only an interpreter-required context can be budgeted, because the budget
+                // is charged by interpreter dispatch. Rejecting here avoids a binder whose code
+                // already ran (possibly JIT) being counted as "never executed".
+                if (!binder->RuneCLRRequiresInterpreter())
+                    COMPlusThrowNonLocalized(kInvalidOperationException, W("A callback deadline requires an interpreter-required load context."));
+                switch (deadline->Configure(value, interval))
+                {
+                    case RuneCLRDeadline::ConfigureResult::Ok:
+                        break;
+                    case RuneCLRDeadline::ConfigureResult::Late:
+                        COMPlusThrowNonLocalized(kInvalidOperationException, W("The callback deadline can only be enabled before this load context first executes; create a new context instead."));
+                        break;
+                    default:
+                        COMPlusThrow(kArgumentOutOfRangeException);
+                }
+                result = 1;
+                break;
+            case 2:
+                if (!binder->RuneCLRRequiresInterpreter())
+                    COMPlusThrowNonLocalized(kInvalidOperationException, W("A callback deadline requires an interpreter-required load context."));
+                // A context without a configured deadline behaves like the pre-deadline
+                // runtime: the trusted host sees an unsupported feature, not a silent no-op.
+                if (!deadline->Enabled())
+                    COMPlusThrowNonLocalized(kPlatformNotSupportedException, W("This load context does not carry a configured callback deadline."));
+                if ((result = deadline->Begin(GetThread())) == 0)
+                    COMPlusThrow(kInvalidOperationException);
+                break;
+            case 3:
+                result = deadline->End(GetThread(), value) ? 1 : 0;
+                break;
+            case 4:
+                // Baseline v1 query contract: raw field read, unknown field -> -1,
+                // no throwing and no owner guard. Fields 8..10 are additive reads.
+                result = deadline->Query(interval);
+                break;
+            case 5:
+                if (!binder->RuneCLRRequiresInterpreter())
+                    COMPlusThrowNonLocalized(kInvalidOperationException, W("A callback deadline requires an interpreter-required load context."));
+                switch (deadline->ConfigureEpoch(value, interval))
+                {
+                    case RuneCLRDeadline::ConfigureResult::Ok:
+                        break;
+                    case RuneCLRDeadline::ConfigureResult::Late:
+                        COMPlusThrowNonLocalized(kInvalidOperationException, W("The callback deadline can only be enabled before this load context first executes; create a new context instead."));
+                        break;
+                    default:
+                        COMPlusThrow(kArgumentOutOfRangeException);
+                }
+                result = 1;
+                break;
+            case 10:
+                if (!binder->RuneCLRRequiresInterpreter())
+                    COMPlusThrowNonLocalized(kInvalidOperationException, W("A callback deadline requires an interpreter-required load context."));
+                if (!deadline->SetCleanupLimit(value))
+                    COMPlusThrow(kArgumentOutOfRangeException);
+                result = 1;
+                break;
+            default:
+                COMPlusThrow(kArgumentOutOfRangeException);
+        }
+    }
+#endif
+    END_QCALL;
+    return result;
 }
 
 #define RUNECLR_MAX_STACK_ORIGINS 16
