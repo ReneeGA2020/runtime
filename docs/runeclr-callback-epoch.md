@@ -101,7 +101,8 @@ invalid numeric arguments are `ArgumentOutOfRangeException`.
 The upstream `InterpreterTester` is the official wrapper and sets `DOTNET_Interpreter=RunInterpreterTests`
 internally; it asserts only the child exit code, so this is compatibility evidence for the documented
 configuration, not an independent per-method interpreted-mode trace. Native blocking cannot be
-interrupted; the experiment is a fail-closed budget, not a sandbox.
+interrupted, and an author finalizer in a configured context is process-fatal (see *Author
+finalizers in a configured context* below); the experiment is a fail-closed budget, not a sandbox.
 
 ## Artifact and build relation
 
@@ -155,6 +156,29 @@ corerun.exe CallbackEpochDeadline.dll
 
 The expected result is a final `PASS` line and exit code 0.
 
+## Author finalizers in a configured context
+
+An isolated artifact lane shows that this prototype cannot safely handle this ordinary author
+mistake. In a context configured with a CLOCK deadline (60 s, poll interval 1, cleanup budget 1000),
+an author object allocated inside `Begin`/`End` was kept alive through `End` and released
+afterwards. Its finalizer then ran on the finalizer thread outside any active callback, was denied
+at its first interpreter checkpoint, and the resulting unhandled `System.OperationCanceledException`
+terminated the process (exit 0xE0434352). The finalizer wrote no marker at all, so the failure
+happened before its first observable instruction; the first-checkpoint/owner-active explanation is
+source reasoning, not a dynamically traced opcode. The same lane fails identically on the frozen
+`7f5a0bc8` build and on the final `08e031af` build, while the same payload in a context without a
+deadline runs both finalizer markers and exits 0. This is a pre-existing limitation, not a
+regression of the G1/switch-index work, and it is not cleanup or recovery.
+
+The lane does not establish how a finalizer behaves inside an active callback (that lane was not
+run), does not provide a separate epoch-mode finalizer test, and does not show that every finalizer
+in the process is blocked. It does mean a host must not keep pending author finalizers in a
+budgeted context. Explicit disposal alone does not prevent finalization: a type whose design relies
+on cleanup must either release its resources inside the active callback and leave no pending
+finalizer, or suppress finalization correctly as part of that type's disposal design. Generic
+`Dispose`/`using` or unloading the context is not a guarantee against this failure, and the
+prototype cannot safely recover from it.
+
 ## Limits
 
 - Windows x64 Release interpreter only. Linux computed-goto, Wasm and Windows Debug/Checked keep the
@@ -165,8 +189,9 @@ The expected result is a final `PASS` line and exit code 0.
   execution evidence should not be read as coverage of every opcode group.
 - One active callback per session and a single owner thread; a competing callback or thread fails
   closed.
-- Native blocking cannot be interrupted, including a `Sleep` inside a finally block; finalizers run
-  outside the deadline. This is a fail-closed budget, not a sandbox.
+- Native blocking cannot be interrupted, including a `Sleep` inside a finally block. Author
+  finalizers in a configured context are process-fatal (see above). This is a fail-closed budget,
+  not a sandbox.
 - The minimal epoch runtime has no instruction quota or terminal bridge; the both-feature host path
   is only covered at its pre-author missing-capability check.
 - The host must keep the ticker alive and dispose it from an ordinary thread; the final join has no
