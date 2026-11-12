@@ -70,7 +70,8 @@ invalid numeric arguments are `ArgumentOutOfRangeException`.
   whose code may already have run (for example under the JIT) can never be counted as "never
   executed". Operation 3 validates the owner and token through `End()`; operation 4 deliberately
   keeps the version-1 diagnostic contract (raw known fields, `-1` for unknown fields, no owner
-  check, never throws) and must not be guarded by a future consistency edit.
+  check and no throwing path inside the query itself; a binder without a deadline is still
+  rejected before the call) and must not be guarded by a future consistency edit.
 - `Begin` requires a published, enabled configuration, no recorded failure, a single-owner
   compare-exchange on the active flag, a non-saturated token and, in epoch mode, a live ticker
   (`epoch > 0` and not saturated). Every failure records a reason and releases ownership.
