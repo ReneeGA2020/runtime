@@ -37,15 +37,21 @@ inline void RuneCLRDeadlineTraceBit(LONG bit) noexcept
     g_runeCLRDeadlineTrace.fetch_or(bit, std::memory_order_relaxed);
 }
 
-// Process-sticky gate: 0 until some binder configures a deadline. While it is 0 the
-// interpreter checkpoint is one relaxed load and one never-taken branch, so a process
-// that never opts in keeps the unpatched interpreter path. It is never cleared.
-extern std::atomic<LONG> g_runeCLRDeadlineConfigured;
-
-FORCEINLINE bool RuneCLRAnyDeadlineConfigured() noexcept
+// Configuration contract (G1): a binder's deadline may only be enabled before any frame of
+// that binder has started executing. The four states make the first-entry/config race
+// mutually exclusive: Configure reserves Fresh->Configuring, a first frame claims
+// Fresh->Executing, and whichever CAS wins decides the binder for its lifetime.
+//   Fresh      : nothing happened yet
+//   Configuring: Configure owns the binder and is publishing fields
+//   Executing  : a frame ran first; the binder is immutable OFF
+//   Configured : Configure published the deadline; frames are immutable ON
+enum : LONG
 {
-    return g_runeCLRDeadlineConfigured.load(std::memory_order_relaxed) != 0;
-}
+    RuneCLRDeadlineFresh = 0,
+    RuneCLRDeadlineConfiguring = 1,
+    RuneCLRDeadlineExecuting = 2,
+    RuneCLRDeadlineConfigured = 3,
+};
 
 // Host-declared period, latched process-wide to the first declared value; repeating the same
 // value is idempotent and a different value is rejected by the caller (qcall op 6 maps it to
@@ -106,7 +112,12 @@ public:
         PhaseCleanupExhausted = 2,
     };
 
-    bool Enabled() const noexcept { return m_configured; }
+    // Publication-based: only the release store of RuneCLRDeadlineConfigured makes a deadline
+    // usable, so Begin/Query/cleanup-owner never observe a half-published configuration.
+    bool Enabled() const noexcept
+    {
+        return m_configState.load(std::memory_order_acquire) == RuneCLRDeadlineConfigured;
+    }
     bool IsEpochMode() const noexcept { return m_epochMode; }
     INT32 Interval() const noexcept { return m_interval; }
     LONG Failure() const noexcept { return VolatileLoad(&m_failure); }
@@ -115,42 +126,67 @@ public:
     LONG Reason() const noexcept { return Failure() != 0 ? Failure() : (IsTerminated() ? 1 : 0); }
 
     // Cleanup allowance in opcodes, set before the deadline is enabled. Zero means
-    // "no author cleanup may run after termination".
+    // "no author cleanup may run after termination". It takes the same Fresh -> Configuring
+    // reservation as Configure, so a cleanup setter can never race a configuring writer or
+    // mutate a published deadline.
     bool SetCleanupLimit(INT64 limit) noexcept
     {
-        if (m_configured || limit < 0)
+        if (limit < 0)
             return false;
-        m_cleanupRemaining = limit;
+        LONG expected = RuneCLRDeadlineFresh;
+        if (!m_configState.compare_exchange_strong(expected, RuneCLRDeadlineConfiguring, std::memory_order_acq_rel))
+            return false;
+        InterlockedExchange64(&m_cleanupRemaining, limit);
+        m_configState.store(RuneCLRDeadlineFresh, std::memory_order_release);
         return true;
     }
 
-    // Clock mode: the deadline is measured with the monotonic clock.
-    bool Configure(INT64 duration100ns, INT32 interval) noexcept
+    enum class ConfigureResult
     {
-        if (m_configured || duration100ns <= 0 || (interval != 1 && interval != 100 && interval != 1000))
-            return false;
+        Ok,
+        Invalid,
+        Late,
+    };
+
+    // Clock mode: the deadline is measured with the monotonic clock.
+    ConfigureResult Configure(INT64 duration100ns, INT32 interval) noexcept
+    {
+        if (duration100ns <= 0 || (interval != 1 && interval != 100 && interval != 1000))
+            return ConfigureResult::Invalid;
+
+        LONG expected = RuneCLRDeadlineFresh;
+        if (!m_configState.compare_exchange_strong(expected, RuneCLRDeadlineConfiguring, std::memory_order_acq_rel))
+            return ConfigureResult::Late;
 
         INT64 frequency;
         if (!Frequency(frequency))
-            return false;
+        {
+            m_configState.store(RuneCLRDeadlineFresh, std::memory_order_release);
+            return ConfigureResult::Invalid;
+        }
 
         const INT64 denominator = 10000000;
         INT64 seconds = duration100ns / denominator;
         INT64 remainder = duration100ns % denominator;
         if (seconds > INT64_MAX / frequency || remainder > (INT64_MAX - denominator + 1) / frequency)
-            return false;
+        {
+            m_configState.store(RuneCLRDeadlineFresh, std::memory_order_release);
+            return ConfigureResult::Invalid;
+        }
 
         INT64 fractional = (remainder * frequency + denominator - 1) / denominator;
         INT64 whole = seconds * frequency;
         if (whole > INT64_MAX - fractional || whole + fractional <= 0)
-            return false;
+        {
+            m_configState.store(RuneCLRDeadlineFresh, std::memory_order_release);
+            return ConfigureResult::Invalid;
+        }
 
         m_frequency = frequency;
         m_duration = whole + fractional;
         m_interval = interval;
-        m_configured = true;
-        g_runeCLRDeadlineConfigured.store(1, std::memory_order_release);
-        return true;
+        m_configState.store(RuneCLRDeadlineConfigured, std::memory_order_release);
+        return ConfigureResult::Ok;
     }
 
     // Opt-in epoch mode: the deadline is measured in host-declared epoch ticks instead of a
@@ -158,36 +194,65 @@ public:
     // the budget is ceil(duration/period) + 1: the fixed phase allowance guarantees the
     // deadline can never fire before the requested duration has elapsed. Worst-case lateness
     // is therefore < 2 declared periods plus ticker scheduling and poll-interval delays.
-    bool ConfigureEpoch(INT64 duration100ns, INT32 interval) noexcept
+    ConfigureResult ConfigureEpoch(INT64 duration100ns, INT32 interval) noexcept
     {
-        if (m_configured || duration100ns <= 0 || (interval != 1 && interval != 100 && interval != 1000))
-            return false;
+        if (duration100ns <= 0 || (interval != 1 && interval != 100 && interval != 1000))
+            return ConfigureResult::Invalid;
+
+        LONG expected = RuneCLRDeadlineFresh;
+        if (!m_configState.compare_exchange_strong(expected, RuneCLRDeadlineConfiguring, std::memory_order_acq_rel))
+            return ConfigureResult::Late;
 
         INT64 periodMicros = g_runeCLREpochPeriodMicros.load(std::memory_order_acquire);
         if (periodMicros <= 0 || periodMicros > 1000000)
-            return false;
+        {
+            m_configState.store(RuneCLRDeadlineFresh, std::memory_order_release);
+            return ConfigureResult::Invalid;
+        }
 
         // One declared period is periodMicros * 10 in 100ns units.
-        const INT64 denominator = 10000000;
         INT64 ticksPerPeriod = periodMicros * 10;
         INT64 whole = duration100ns / ticksPerPeriod;
         INT64 remainder = duration100ns % ticksPerPeriod;
         if (remainder != 0)
             ++whole;
         if (whole <= 0 || whole > INT64_MAX - 2)
-            return false;
+        {
+            m_configState.store(RuneCLRDeadlineFresh, std::memory_order_release);
+            return ConfigureResult::Invalid;
+        }
 
         m_budgetTicks = whole + 1;
         m_interval = interval;
         m_epochMode = true;
-        m_configured = true;
-        g_runeCLRDeadlineConfigured.store(1, std::memory_order_release);
-        return true;
+        m_configState.store(RuneCLRDeadlineConfigured, std::memory_order_release);
+        return ConfigureResult::Ok;
+    }
+
+    // First-frame claim. Returns true when this frame must charge the deadline.
+    // Fresh -> Executing is arbitrated against Configure's Fresh -> Configuring CAS, so a frame
+    // and a Configure can never both win. A frame that observes Configuring is treated as
+    // checked and fails closed at its first charge (Check() sees no active owner), which is
+    // exactly the fail-closed outcome: it never runs uncharged and never caches OFF.
+    FORCEINLINE bool ClaimExecutionMode() noexcept
+    {
+        LONG state = m_configState.load(std::memory_order_acquire);
+        if (state == RuneCLRDeadlineConfigured || state == RuneCLRDeadlineConfiguring)
+            return true;
+        if (state == RuneCLRDeadlineExecuting)
+            return false;
+
+        LONG expected = RuneCLRDeadlineFresh;
+        if (m_configState.compare_exchange_strong(expected, RuneCLRDeadlineExecuting, std::memory_order_acq_rel))
+            return false;
+
+        // Lost the CAS: the observed state decides the mode (Configuring/Configured -> checked).
+        return expected != RuneCLRDeadlineExecuting;
     }
 
     INT64 Begin(void* owner) noexcept
     {
-        if (!m_configured || Failure() != 0 || InterlockedCompareExchange(&m_active, -1, 0) != 0)
+        if (!Enabled() || Failure() != 0 || InterlockedCompareExchange(&m_active, -1, 0) != 0)
         {
             Fail(4);
             return 0;
@@ -276,7 +341,7 @@ public:
     // is abandoned rather than run unbounded.
     FORCEINLINE bool TryChargeCleanup(void* owner) noexcept
     {
-        if (!m_configured || Phase() != PhaseTerminated)
+        if (!Enabled() || Phase() != PhaseTerminated)
             return false;
 
         if (owner != m_owner.load(std::memory_order_acquire))
@@ -306,26 +371,34 @@ public:
 
     // Diagnostic fields read by the trusted host. Unknown fields return -1, matching the
     // baseline version-1 contract; fields 8..10 are additive epoch information.
+    // v1 diagnostic contract: every known field has a meaningful value in any state, unknown
+    // fields are -1. Configuration-derived fields (0/4/8/9/15/16) are only read after the
+    // Configure publication; while a Configure is in flight, or before one ever ran, they read as
+    // their stable never-configured default 0. Counters and process-global diagnostics stay
+    // readable in every state, and the cleanup allowance is read atomically because the setter
+    // publishes it atomically.
     INT64 Query(INT32 field) const noexcept
     {
+        LONG state = m_configState.load(std::memory_order_acquire);
+        bool published = state == RuneCLRDeadlineConfigured;
         switch (field)
         {
-            case 0: return m_frequency;
+            case 0: return published ? m_frequency : 0;
             case 1: return InterlockedCompareExchange64(&m_checks, 0, 0);
             case 2: return InterlockedCompareExchange64(&m_admitted, 0, 0);
             case 3: return VolatileLoad(&m_active);
-            case 4: return m_interval;
+            case 4: return published ? m_interval : 0;
             case 5: return m_token;
             case 6: return Failure();
-            case 8: return m_epochMode ? 1 : 0;
-            case 9: return m_budgetTicks;
+            case 8: return published && m_epochMode ? 1 : 0;
+            case 9: return published ? m_budgetTicks : 0;
             case 10: return g_runeCLREpoch.load(std::memory_order_acquire);
             case 11: return InterlockedCompareExchange64(&m_cleanupRemaining, 0, 0);
             case 12: return m_cleanupCharges;
             case 13: return g_runeCLRDeadlineFuncletSeen.load(std::memory_order_acquire);
             case 14: return g_runeCLRDeadlineTrace.load(std::memory_order_acquire);
-            case 15: return m_startEpoch;
-            case 16: return m_lastEpoch;
+            case 15: return published ? m_startEpoch : 0;
+            case 16: return published ? m_lastEpoch : 0;
             default: return -1;
         }
     }
@@ -429,7 +502,7 @@ private:
     }
 
     INT32 m_interval = 0;
-    bool m_configured = false;
+    mutable std::atomic<LONG> m_configState{RuneCLRDeadlineFresh};
     bool m_epochMode = false;
     volatile LONG m_failure = 0;
     volatile LONG m_active = 0;

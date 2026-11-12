@@ -1315,7 +1315,6 @@ std::atomic<INT64> g_runeCLREpoch{0};
 std::atomic<INT64> g_runeCLREpochPeriodMicros{0};
 std::atomic<LONG> g_runeCLRDeadlineFuncletSeen{0};
 std::atomic<LONG> g_runeCLRDeadlineTrace{0};
-std::atomic<LONG> g_runeCLRDeadlineConfigured{0};
 RuneCLRDeadline g_runeCLRDeadlineNone;
 
 // Operations: 0 version, 1 configure clock deadline, 2 begin, 3 end, 4 query field,
@@ -1364,11 +1363,26 @@ extern "C" INT64 QCALLTYPE AssemblyNative_RuneCLRDeadline(INT_PTR ptrNativeAssem
         switch (operation)
         {
             case 1:
-                if (!deadline->Configure(value, interval))
-                    COMPlusThrow(kArgumentOutOfRangeException);
+                // Policy: only an interpreter-required context can be budgeted, because the budget
+                // is charged by interpreter dispatch. Rejecting here avoids a binder whose code
+                // already ran (possibly JIT) being counted as "never executed".
+                if (!binder->RuneCLRRequiresInterpreter())
+                    COMPlusThrowNonLocalized(kInvalidOperationException, W("A callback deadline requires an interpreter-required load context."));
+                switch (deadline->Configure(value, interval))
+                {
+                    case RuneCLRDeadline::ConfigureResult::Ok:
+                        break;
+                    case RuneCLRDeadline::ConfigureResult::Late:
+                        COMPlusThrowNonLocalized(kInvalidOperationException, W("The callback deadline can only be enabled before this load context first executes; create a new context instead."));
+                        break;
+                    default:
+                        COMPlusThrow(kArgumentOutOfRangeException);
+                }
                 result = 1;
                 break;
             case 2:
+                if (!binder->RuneCLRRequiresInterpreter())
+                    COMPlusThrowNonLocalized(kInvalidOperationException, W("A callback deadline requires an interpreter-required load context."));
                 // A context without a configured deadline behaves like the pre-deadline
                 // runtime: the trusted host sees an unsupported feature, not a silent no-op.
                 if (!deadline->Enabled())
@@ -1385,11 +1399,23 @@ extern "C" INT64 QCALLTYPE AssemblyNative_RuneCLRDeadline(INT_PTR ptrNativeAssem
                 result = deadline->Query(interval);
                 break;
             case 5:
-                if (!deadline->ConfigureEpoch(value, interval))
-                    COMPlusThrow(kArgumentOutOfRangeException);
+                if (!binder->RuneCLRRequiresInterpreter())
+                    COMPlusThrowNonLocalized(kInvalidOperationException, W("A callback deadline requires an interpreter-required load context."));
+                switch (deadline->ConfigureEpoch(value, interval))
+                {
+                    case RuneCLRDeadline::ConfigureResult::Ok:
+                        break;
+                    case RuneCLRDeadline::ConfigureResult::Late:
+                        COMPlusThrowNonLocalized(kInvalidOperationException, W("The callback deadline can only be enabled before this load context first executes; create a new context instead."));
+                        break;
+                    default:
+                        COMPlusThrow(kArgumentOutOfRangeException);
+                }
                 result = 1;
                 break;
             case 10:
+                if (!binder->RuneCLRRequiresInterpreter())
+                    COMPlusThrowNonLocalized(kInvalidOperationException, W("A callback deadline requires an interpreter-required load context."));
                 if (!deadline->SetCleanupLimit(value))
                     COMPlusThrow(kArgumentOutOfRangeException);
                 result = 1;

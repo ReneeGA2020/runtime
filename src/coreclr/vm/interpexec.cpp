@@ -917,17 +917,24 @@ NOINLINE static void InterpThrow(InterpMethodContextFrame* pFrame, const int32_t
 static FORCEINLINE RuneCLRDeadline* RuneCLRResolveCallbackDeadline(InterpMethodContextFrame* frame)
 {
     LIMITED_METHOD_CONTRACT;
-    if (frame->runeclrCallbackDeadline == nullptr)
-    {
-        RuneCLRDeadline* deadline = nullptr;
-        MethodDesc* method = frame->startIp->Method->methodHnd;
-        AssemblyBinder* binder = method->GetModule()->GetPEAssembly()->GetAssemblyBinder();
-        if (binder != nullptr)
-            deadline = binder->GetRuneCLRCallbackDeadline();
+    RuneCLRDeadline* cached = frame->runeclrCallbackDeadline;
+    if (cached != nullptr)
+        return cached == &g_runeCLRDeadlineNone ? nullptr : cached;
 
-        frame->runeclrCallbackDeadline = deadline == nullptr ? &g_runeCLRDeadlineNone : deadline;
+    RuneCLRDeadline* deadline = nullptr;
+    MethodDesc* method = frame->startIp->Method->methodHnd;
+    AssemblyBinder* binder = method->GetModule()->GetPEAssembly()->GetAssemblyBinder();
+    if (binder != nullptr)
+    {
+        RuneCLRDeadline* candidate = binder->GetRuneCLRCallbackDeadline();
+        // ClaimExecutionMode is the G1 first-frame gate: it either makes this binder immutable
+        // OFF (and returns false) or reports that this frame must charge.
+        if (candidate != nullptr && candidate->ClaimExecutionMode())
+            deadline = candidate;
     }
-    return frame->runeclrCallbackDeadline;
+
+    frame->runeclrCallbackDeadline = deadline == nullptr ? &g_runeCLRDeadlineNone : deadline;
+    return deadline;
 }
 
 // Scalar opcodes that cannot run unbounded native work between two polls. Any
@@ -1045,12 +1052,10 @@ static FORCEINLINE bool RuneCLRIsDeadlineTableSafeOpcode(UINT32 opcode) noexcept
     return opcode < INTOP_LAST && s_runeclrDeadlineOpcodeBytes.safe[opcode] != 0;
 }
 
-static FORCEINLINE bool RuneCLRChargeCallbackDeadline(InterpMethodContextFrame* frame, InterpThreadContext* threadContext,
-                                                      UINT32 opcode, const void*& deadlineFrame, bool& deadlineBoundary)
+static FORCEINLINE bool RuneCLRChargeCallbackDeadline(RuneCLRDeadline* deadline, InterpMethodContextFrame* frame,
+                                                      InterpThreadContext* threadContext, UINT32 opcode,
+                                                      const void*& deadlineFrame, bool& deadlineBoundary)
 {
-    RuneCLRDeadline* deadline = RuneCLRResolveCallbackDeadline(frame);
-    if (!deadline->Enabled())
-        return true;
 
     // Only a terminated deadline converts the cleanup funclet to the bounded budget;
     // an ordinary finally of a running callback keeps the normal deadline check.
@@ -1074,8 +1079,8 @@ static FORCEINLINE bool RuneCLRChargeCallbackDeadline(InterpMethodContextFrame* 
 // Only an actual EH finally/fault invocation may abandon its remaining author
 // cleanup using the normal native funclet return; callbacks do not gain that exit.
 #define RUNECLR_CALLBACK_DEADLINE_DISPATCH() do { \
-    if (RuneCLRAnyDeadlineConfigured() && \
-        !RuneCLRChargeCallbackDeadline(pFrame, pThreadContext, opcode, runeclrDeadlineFrame, runeclrDeadlineBoundary)) { \
+    if (runeclrFrameDeadline != nullptr && \
+        !RuneCLRChargeCallbackDeadline(runeclrFrameDeadline, pFrame, pThreadContext, opcode, runeclrDeadlineFrame, runeclrDeadlineBoundary)) { \
         pFrame->ip = ip; \
         RuneCLRDeadlineTraceBit(0x4); \
         if (pExceptionClauseArgs != nullptr) { \
@@ -1728,6 +1733,8 @@ void InterpExecMethod(InterpreterFrame *pInterpreterFrame, InterpMethodContextFr
     InterpMethodContextFrame* const runeclrInvocationFrame = pFrame;
     const void* runeclrDeadlineFrame = nullptr;
     bool runeclrDeadlineBoundary = true;
+    // Per-frame checked mode, refreshed at every frame transition below and at MAIN_LOOP.
+    RuneCLRDeadline* runeclrFrameDeadline = nullptr;
 
 #if USE_COMPUTED_GOTO
     static const void* const s_dispatchTable[] = {
@@ -1739,6 +1746,8 @@ void InterpExecMethod(InterpreterFrame *pInterpreterFrame, InterpMethodContextFr
 #endif // USE_COMPUTED_GOTO
 
 MAIN_LOOP:
+    // Invocation entry, return to a caller frame, catch resume and abort/resume all land here.
+    runeclrFrameDeadline = RuneCLRResolveCallbackDeadline(pFrame);
     try
     {
         INSTALL_MANAGED_EXCEPTION_DISPATCHER;
@@ -3787,7 +3796,9 @@ SWITCH_OPCODE:
                             if (frameNeedsTailcallUpdate)
                             {
                                 ShiftDelegateCallArgs(stack, callArgsOffset, sizeOfArgsUpto16ByteAlignment, pTargetMethod->argsSize);
+
                                 UpdateFrameForTailCall(pFrame, targetIp, LOCAL_VAR_ADDR(callArgsOffset, int8_t));
+                                runeclrFrameDeadline = RuneCLRResolveCallbackDeadline(pFrame);
                                 frameNeedsTailcallUpdate = false;
                             }
                             else
@@ -3806,8 +3817,10 @@ SWITCH_OPCODE:
                                     CompilerBarrier();
                                     pFrame->pNext = pChildFrame;
                                 }
+
                                 pChildFrame->ReInit(pFrame, targetIp, returnValueAddress, LOCAL_VAR_ADDR(callArgsOffset, int8_t));
                                 pFrame = pChildFrame;
+                                runeclrFrameDeadline = RuneCLRResolveCallbackDeadline(pFrame);
                             }
                             // Set execution state for the new frame
                             pMethod = pFrame->startIp->Method;
@@ -3893,7 +3906,9 @@ CALL_INTERP_METHOD:
                         BrowserProfiler_OnMethodLeave(pMethod->methodHnd);
 #endif
                         InterpMethod* pTargetMethod = targetIp->Method;
+
                         UpdateFrameForTailCall(pFrame, targetIp, callArgsAddress);
+                        runeclrFrameDeadline = RuneCLRResolveCallbackDeadline(pFrame);
                         frameNeedsTailcallUpdate = false;
                     }
                     else
@@ -3914,8 +3929,10 @@ CALL_INTERP_METHOD:
                                 CompilerBarrier();
                                 pFrame->pNext = pChildFrame;
                             }
+
                             pChildFrame->ReInit(pFrame, targetIp, returnValueAddress, callArgsAddress);
                             pFrame = pChildFrame;
+                            runeclrFrameDeadline = RuneCLRResolveCallbackDeadline(pFrame);
                         }
                         assert (((size_t)pFrame->pStack % INTERP_STACK_ALIGNMENT) == 0);
                     }
@@ -4801,8 +4818,10 @@ do                                                                      \
                             pFrame->pNext = pChildFrame;
                         }
                         // Set the frame to the same values as the caller frame.
+
                         pChildFrame->ReInit(pFrame, pFrame->startIp, pFrame->pRetVal, pFrame->pStack);
                         pFrame = pChildFrame;
+                        runeclrFrameDeadline = RuneCLRResolveCallbackDeadline(pFrame);
                     }
                     assert (((size_t)pFrame->pStack % INTERP_STACK_ALIGNMENT) == 0);
 

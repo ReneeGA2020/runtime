@@ -90,6 +90,10 @@ namespace RuneCLR.CallbackEpochDeadline
 
         public static long Reenter(long iterations) => Spin(iterations) + Spin(2);
 
+        // Used by the cross-context cases: the delegate body may live in another load context,
+        // so the callee frame is pushed inside this method's interpreter invocation.
+        public static long CallDelegate(Func<long, long> body, long iterations) => body(iterations);
+
         public sealed class SpinConstructor
         {
             public long Value;
@@ -124,6 +128,8 @@ namespace RuneCLR.CallbackEpochDeadline
         internal static readonly MethodInfo BeginDeadline = Find("RuneCLR_BeginCallbackDeadline", InstanceFlags);
         internal static readonly MethodInfo EndDeadline = Find("RuneCLR_EndCallbackDeadline", InstanceFlags);
         internal static readonly MethodInfo QueryDeadline = Find("RuneCLR_QueryCallbackDeadline", InstanceFlags);
+        internal static readonly MethodInfo DeadlineNative = Find("RuneCLR_DeadlineNative", StaticFlags);
+        internal static readonly MethodInfo CreateInterpreterRequired = Find("RuneCLR_CreateInterpreterRequired", StaticFlags);
 
         internal static long VersionValue() => (long)Version.Invoke(null, null)!;
         internal static int CapabilityValue() => (int)Capabilities.Invoke(null, null)!;
@@ -168,6 +174,14 @@ namespace RuneCLR.CallbackEpochDeadline
                 ReentryTerminates();
                 UnconfiguredContextIsUnchanged();
                 NextCallbackAfterTermination();
+                G1LateConfigureRejected();
+                G1InvalidConfigRollsBack();
+                G1ConcurrentConfigureWriters();
+                G1ConfigureVersusCleanupSetter();
+                G1ConfigureVersusFirstEntry();
+                QueryAbiBeforeConfigure();
+                CrossContextBudgetCallee();
+                CrossContextBudgetCallsUnbudgetHelper();
                 Overhead();
             }
             finally
@@ -195,6 +209,27 @@ namespace RuneCLR.CallbackEpochDeadline
         }
 
         private static void StopTicker() => s_tickerStop = true;
+
+        private static AssemblyLoadContext CreateInterpreterRequired(string name)
+            => (AssemblyLoadContext)DeadlineApi.CreateInterpreterRequired!.Invoke(null, new object[] { name, Resolver })!;
+
+        private static IntPtr BinderOf(AssemblyLoadContext context) =>
+            (IntPtr)typeof(AssemblyLoadContext)
+                .GetField("_nativeAssemblyLoadContext", BindingFlags.NonPublic | BindingFlags.Instance)!
+                .GetValue(context)!;
+
+        private static Exception? TryDeadlineOp(IntPtr binder, int operation, long value, int interval)
+        {
+            try
+            {
+                DeadlineApi.DeadlineNative!.Invoke(null, new object[] { binder, operation, value, interval });
+                return null;
+            }
+            catch (TargetInvocationException error) when (error.InnerException is not null)
+            {
+                return error.InnerException;
+            }
+        }
 
         private static AssemblyLoadContext CreateEpochContext(long deadline100ns, long cleanupBudget)
             => CreateEpochContextAt(deadline100ns, cleanupBudget, PollInterval);
@@ -489,6 +524,178 @@ namespace RuneCLR.CallbackEpochDeadline
                 s_failures++;
                 Console.WriteLine("FAIL " + name);
             }
+        }
+        // G1: a context that already executed must reject late enablement in both modes, must keep
+        // working, and must not end up partially configured.
+        private static void G1LateConfigureRejected()
+        {
+            AssemblyLoadContext context = CreateInterpreterRequired("late");
+            Assembly author = LoadAuthor(context);
+            Call(author, "RuneCLR.CallbackEpochDeadline.Author", "Spin", 1_000L);
+            IntPtr binder = BinderOf(context);
+            Exception? clock = TryDeadlineOp(binder, 1, 50_000, 1);
+            Exception? epoch = TryDeadlineOp(binder, 5, 50_000, 1);
+            Check("g1-late-clock-rejected", clock is InvalidOperationException);
+            Check("g1-late-epoch-rejected", epoch is InvalidOperationException);
+            object? again = Call(author, "RuneCLR.CallbackEpochDeadline.Author", "Spin", 1_000L);
+            Check("g1-late-context-still-runs", again is long && (long)again == ReferenceSpin(1_000));
+            Check("g1-late-not-configured", IsRejected(() => DeadlineApi.Begin(context)));
+            Check("g1-late-query-interval-zero", DeadlineApi.Query(context, 4) == 0);
+            context.Unload();
+        }
+
+        // Invalid configuration must roll the binder back to "fresh" so a valid configure still works.
+        private static void G1InvalidConfigRollsBack()
+        {
+            AssemblyLoadContext context = CreateInterpreterRequired("rollback");
+            IntPtr binder = BinderOf(context);
+            Exception? invalid = TryDeadlineOp(binder, 1, 0, 1);
+            Check("g1-invalid-rejected", invalid is ArgumentOutOfRangeException);
+            Exception? valid = TryDeadlineOp(binder, 1, 50_000, 1);
+            Check("g1-invalid-rollback-allows-configure", valid is null);
+            Exception? error = RunTerminated(context, "Spin", InfiniteIterations);
+            Check("g1-rollback-config-enforces", error is OperationCanceledException);
+            context.Unload();
+        }
+
+        // Two configuring writers with different parameters: exactly one wins, the loser sees an
+        // explicit late error, and the published interval is one of the two requested values.
+        private static void G1ConcurrentConfigureWriters()
+        {
+            AssemblyLoadContext context = CreateInterpreterRequired("writers");
+            IntPtr binder = BinderOf(context);
+            Exception? first = null, second = null;
+            Thread one = new(() => first = TryDeadlineOp(binder, 1, 50_000, 1));
+            Thread two = new(() => second = TryDeadlineOp(binder, 1, 60_000, 100));
+            one.Start(); two.Start(); one.Join(); two.Join();
+            int wins = (first is null ? 1 : 0) + (second is null ? 1 : 0);
+            Check("g1-two-writers-one-winner", wins == 1);
+            Check("g1-two-writers-loser-explicit",
+                first is InvalidOperationException || second is InvalidOperationException);
+            long interval = DeadlineApi.Query(context, 4);
+            Check("g1-two-writers-published-value", interval == 1 || interval == 100);
+            context.Unload();
+        }
+
+        // Configure and the cleanup setter share the same exclusive reservation.
+        private static void G1ConfigureVersusCleanupSetter()
+        {
+            AssemblyLoadContext context = CreateInterpreterRequired("cfgcleanup");
+            IntPtr binder = BinderOf(context);
+            Exception? configure = null, cleanup = null;
+            Thread one = new(() => configure = TryDeadlineOp(binder, 1, 50_000, 1));
+            Thread two = new(() => cleanup = TryDeadlineOp(binder, 10, 1_000, 0));
+            one.Start(); two.Start(); one.Join(); two.Join();
+            Check("g1-configure-cleanup-exclusive", (configure is null) != (cleanup is null));
+            context.Unload();
+        }
+
+        // A frame that enters while a Configure is in flight must not run uncharged: it either
+        // observes the published deadline (charged) or is denied; the binder never ends up
+        // partially configured and stays usable afterwards.
+        private static void G1ConfigureVersusFirstEntry()
+        {
+            AssemblyLoadContext context = CreateInterpreterRequired("race");
+            Assembly author = LoadAuthor(context);
+            Thread runner = new(() =>
+            {
+                try { Call(author, "RuneCLR.CallbackEpochDeadline.Author", "Spin", 40_000_000L); }
+                catch (Exception) { }
+            });
+            runner.Start();
+            Thread.Sleep(5);
+            Exception? configureError = TryDeadlineOp(BinderOf(context), 5, 50_000, 1);
+            runner.Join();
+            Check("g1-race-outcome-explicit",
+                configureError is null || configureError is InvalidOperationException);
+            bool configured = configureError is null;
+            Check("g1-race-no-partial-state",
+                configured ? DeadlineApi.Query(context, 4) == 1 : DeadlineApi.Query(context, 4) == 0);
+            object? after = Call(author, "RuneCLR.CallbackEpochDeadline.Author", "Spin", 1_000L);
+            Check("g1-race-context-usable", after is long && (long)after == ReferenceSpin(1_000));
+            context.Unload();
+        }
+
+        // v1 query ABI: known fields have meaningful values before any Configure, unknown are -1,
+        // the cleanup setter is visible through field 11 and the global diagnostics stay readable.
+        private static void QueryAbiBeforeConfigure()
+        {
+            AssemblyLoadContext context = CreateInterpreterRequired("queryabi");
+            long epochBefore = DeadlineApi.ReadValue();
+            Check("abi-pre-frequency", DeadlineApi.Query(context, 0) == 0);
+            Check("abi-pre-checks", DeadlineApi.Query(context, 1) == 0);
+            Check("abi-pre-admitted", DeadlineApi.Query(context, 2) == 0);
+            Check("abi-pre-active", DeadlineApi.Query(context, 3) == 0);
+            Check("abi-pre-interval", DeadlineApi.Query(context, 4) == 0);
+            Check("abi-pre-token", DeadlineApi.Query(context, 5) == 0);
+            Check("abi-pre-reason", DeadlineApi.Query(context, 6) == 0);
+            Check("abi-pre-epochmode", DeadlineApi.Query(context, 8) == 0);
+            Check("abi-pre-budget", DeadlineApi.Query(context, 9) == 0);
+            Check("abi-pre-global-epoch", DeadlineApi.Query(context, 10) >= epochBefore);
+            Check("abi-unknown-minus-one", DeadlineApi.Query(context, 99) == -1);
+            Check("abi-unknown-neg-minus-one", DeadlineApi.Query(context, -1) == -1);
+            Exception? cleanup = TryDeadlineOp(BinderOf(context), 10, 1_234, 0);
+            Check("abi-cleanup-set", cleanup is null);
+            Check("abi-cleanup-visible", DeadlineApi.Query(context, 11) == 1_234);
+            Check("abi-global-epoch-readable", DeadlineApi.Query(context, 10) > 0);
+            Check("abi-global-trace-readable", DeadlineApi.Query(context, 13) >= 0 && DeadlineApi.Query(context, 14) >= 0);
+            context.Unload();
+        }
+
+        // Cross-context crossing: an unbudgeted interpreter-required caller pushes a budgeted callee
+        // frame inside the same interpreter invocation. The callee must charge and terminate.
+        private static void CrossContextBudgetCallee()
+        {
+            AssemblyLoadContext caller = CreateInterpreterRequired("cross-caller");
+            AssemblyLoadContext budget = CreateEpochContext(50_000, CleanupBudget);
+            Assembly callerAuthor = LoadAuthor(caller);
+            Assembly budgetAuthor = LoadAuthor(budget);
+            MethodInfo spin = budgetAuthor.GetType("RuneCLR.CallbackEpochDeadline.Author")!
+                .GetMethod("Spin", BindingFlags.Public | BindingFlags.Static)!;
+            Func<long, long> callee = (Func<long, long>)Delegate.CreateDelegate(typeof(Func<long, long>), spin);
+            long token = DeadlineApi.Begin(budget);
+            Exception? error = null;
+            try
+            {
+                Call(callerAuthor, "RuneCLR.CallbackEpochDeadline.Author", "CallDelegate", callee, InfiniteIterations);
+            }
+            catch (Exception caught)
+            {
+                error = caught;
+            }
+            finally
+            {
+                DeadlineApi.End(budget, token);
+            }
+            Check("cross-budget-callee-terminates", error is OperationCanceledException);
+            Check("cross-budget-callee-reason", DeadlineApi.Query(budget, 6) == 2);
+            caller.Unload();
+            budget.Unload();
+        }
+
+        // Budgeted context calls an unbudgeted helper in another context and returns.
+        private static void CrossContextBudgetCallsUnbudgetHelper()
+        {
+            AssemblyLoadContext budget = CreateEpochContext(60_000_000, CleanupBudget);
+            AssemblyLoadContext helper = CreateInterpreterRequired("cross-helper");
+            Assembly budgetAuthor = LoadAuthor(budget);
+            Assembly helperAuthor = LoadAuthor(helper);
+            MethodInfo spin = helperAuthor.GetType("RuneCLR.CallbackEpochDeadline.Author")!
+                .GetMethod("Spin", BindingFlags.Public | BindingFlags.Static)!;
+            Func<long, long> helperBody = (Func<long, long>)Delegate.CreateDelegate(typeof(Func<long, long>), spin);
+            long token = DeadlineApi.Begin(budget);
+            object? value = null;
+            try
+            {
+                value = Call(budgetAuthor, "RuneCLR.CallbackEpochDeadline.Author", "CallDelegate", helperBody, 10_000L);
+            }
+            finally
+            {
+                DeadlineApi.End(budget, token);
+            }
+            Check("cross-budget-helper-returns", value is long && (long)value == ReferenceSpin(10_000));
+            helper.Unload();
+            budget.Unload();
         }
     }
 }
