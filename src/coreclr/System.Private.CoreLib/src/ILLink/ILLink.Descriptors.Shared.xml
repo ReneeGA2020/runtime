@@ -10,6 +10,15 @@
       <method name="RuneCLR_CreateInterpreterRequired" />
       <method name="RuneCLR_GetExecutionPolicyVersion" />
       <method name="RuneCLR_GetExecutionPolicy" />
+      <method name="RuneCLR_GetCallbackDeadlineVersion" />
+      <method name="RuneCLR_GetCallbackDeadlineCapabilities" />
+      <method name="RuneCLR_CreateCallbackDeadline" />
+      <method name="RuneCLR_CreateCallbackDeadlineEpoch" />
+      <method name="RuneCLR_TickCallbackDeadlineEpoch" />
+      <method name="RuneCLR_ReadCallbackDeadlineEpoch" />
+      <method name="RuneCLR_BeginCallbackDeadline" />
+      <method name="RuneCLR_EndCallbackDeadline" />
+      <method name="RuneCLR_QueryCallbackDeadline" />
     </type>
     <type fullname="System.GC">
       <!-- Methods are used to register and unregister frozen segments. They are private and experimental. -->

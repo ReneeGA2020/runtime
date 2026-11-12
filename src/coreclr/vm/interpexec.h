@@ -26,6 +26,7 @@ struct StackVal
 
 typedef DPTR(struct InterpMethodContextFrame) PTR_InterpMethodContextFrame;
 class InterpreterFrame;
+class RuneCLRDeadline;
 
 struct InterpMethodContextFrame
 {
@@ -36,9 +37,21 @@ struct InterpMethodContextFrame
     const int32_t *ip; // This ip is updated only when execution can leave the frame
     PTR_InterpMethodContextFrame pNext;
 
+    // Private RuneCLR experiment: the binder's callback deadline is resolved once
+    // per frame (see runeclrdeadline.h) so dispatch only pays a pointer load.
+    RuneCLRDeadline* runeclrCallbackDeadline;
+    bool runeclrCallbackDeadlineResolved;
+
 #ifndef DACCESS_COMPILE
+    FORCEINLINE void ResetRuneCLRCallbackDeadline() noexcept
+    {
+        runeclrCallbackDeadline = nullptr;
+        runeclrCallbackDeadlineResolved = false;
+    }
+
     void ReInit(InterpMethodContextFrame *pParent, InterpByteCodeStart* startIp, int8_t *pRetVal, int8_t *pStack)
     {
+        ResetRuneCLRCallbackDeadline();
         this->pParent = pParent;
         this->startIp = startIp;
         this->pRetVal = pRetVal;
@@ -60,6 +73,11 @@ struct InterpThreadContext
     PTR_INT8 pStackPointer;
 
     FrameDataAllocator frameDataAllocator;
+
+    // Private RuneCLR experiment: non-null only while this thread executes a
+    // finally/fault funclet of a terminated callback, which is the single path
+    // allowed to spend the bounded cleanup budget instead of being abandoned.
+    RuneCLRDeadline* runeclrCleanupOwner;
 
 #ifdef DEBUGGING_SUPPORTED
     // Breakpoint bypass state. When the debugger wants the interpreter to skip
@@ -106,6 +124,10 @@ struct ExceptionClauseArgs
     InterpMethodContextFrame *pFrame;
     // Set to true if the exception clause is a filter
     bool isFilter;
+    // Set to true for a finally/fault cleanup funclet. A callback deadline that
+    // fires inside such a funclet abandons the remaining author cleanup instead
+    // of throwing, so an unbounded finally cannot outlive the callback.
+    bool isCleanup;
     // The exception object passed to the filter or catch clause
     OBJECTREF throwable;
 };

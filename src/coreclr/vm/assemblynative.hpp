@@ -113,6 +113,7 @@ extern "C" INT_PTR QCALLTYPE AssemblyNative_InitializeAssemblyLoadContext(INT_PT
 extern "C" INT_PTR QCALLTYPE AssemblyNative_InitializeInterpreterRequiredLoadContext(INT_PTR ptrAssemblyLoadContext, QCallExceptionStatus* qcallError);
 extern "C" INT32 QCALLTYPE AssemblyNative_RuneCLRGetExecutionPolicyVersion(QCallExceptionStatus* qcallError);
 extern "C" INT32 QCALLTYPE AssemblyNative_RuneCLRGetExecutionPolicy(INT_PTR ptrNativeAssemblyBinder, QCallExceptionStatus* qcallError);
+extern "C" INT64 QCALLTYPE AssemblyNative_RuneCLRDeadline(INT_PTR ptrNativeAssemblyBinder, INT32 operation, INT64 value, INT32 interval, QCallExceptionStatus* qcallError);
 
 extern "C" void QCALLTYPE AssemblyNative_PrepareForAssemblyLoadContextRelease(INT_PTR ptrNativeAssemblyBinder, INT_PTR ptrManagedStrongAssemblyLoadContext, QCallExceptionStatus* qcallError);
 

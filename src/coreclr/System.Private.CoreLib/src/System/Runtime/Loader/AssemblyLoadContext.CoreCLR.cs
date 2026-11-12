@@ -38,6 +38,76 @@ namespace System.Runtime.Loader
 
         private static int RuneCLR_GetExecutionPolicyVersion() => RuneCLR_GetExecutionPolicyVersionNative();
 
+        // Private RuneCLR experiment: optional callback deadline (version-1 clock mode and
+        // the additive epoch mode). The runtime owns no thread and no timer; a trusted host
+        // declares the process-wide epoch period, ticks the epoch and brackets each callback.
+        private static long RuneCLR_GetCallbackDeadlineVersion() => RuneCLR_DeadlineNative(IntPtr.Zero, 0, 0, 0);
+
+        // bit0: version-1 clock deadline, bit1: opt-in epoch mode.
+        private static int RuneCLR_GetCallbackDeadlineCapabilities() =>
+            (int)RuneCLR_DeadlineNative(IntPtr.Zero, 9, 0, 0);
+
+        private static long RuneCLR_TickCallbackDeadlineEpoch() => RuneCLR_DeadlineNative(IntPtr.Zero, 7, 0, 0);
+        private static long RuneCLR_ReadCallbackDeadlineEpoch() => RuneCLR_DeadlineNative(IntPtr.Zero, 8, 0, 0);
+
+        private static AssemblyLoadContext RuneCLR_CreateCallbackDeadline(string name,
+            Func<AssemblyLoadContext, AssemblyName, Assembly?> resolver, long duration100ns, int interval, long cleanupLimit) =>
+            RuneCLR_CreateCallbackDeadlineCore(name, resolver, duration100ns, interval, cleanupLimit, epochMode: false);
+
+        private static AssemblyLoadContext RuneCLR_CreateCallbackDeadlineEpoch(string name,
+            Func<AssemblyLoadContext, AssemblyName, Assembly?> resolver, long duration100ns, int interval,
+            long cleanupLimit, long epochPeriodMicros)
+        {
+            if ((RuneCLR_GetCallbackDeadlineCapabilities() & 2) == 0)
+                throw new PlatformNotSupportedException("The runtime cannot create an epoch callback deadline.");
+            // The native period latch is process-wide; a conflicting period is rejected by
+            // the qcall as ArgumentOutOfRangeException and normalized by the host.
+            RuneCLR_DeadlineNative(IntPtr.Zero, 6, epochPeriodMicros, 0);
+            return RuneCLR_CreateCallbackDeadlineCore(name, resolver, duration100ns, interval, cleanupLimit, epochMode: true);
+        }
+
+        private static AssemblyLoadContext RuneCLR_CreateCallbackDeadlineCore(string name,
+            Func<AssemblyLoadContext, AssemblyName, Assembly?> resolver, long duration100ns, int interval,
+            long cleanupLimit, bool epochMode)
+        {
+            ArgumentNullException.ThrowIfNull(name);
+            ArgumentNullException.ThrowIfNull(resolver);
+            if (RuneCLR_GetCallbackDeadlineVersion() != 1)
+                throw new PlatformNotSupportedException("The runtime cannot create a callback deadline.");
+            AssemblyLoadContext context = RuneCLR_CreateInterpreterRequired(name, resolver);
+            try
+            {
+                // Cleanup allowance is set before the deadline is enabled.
+                context.RuneCLR_DeadlineOperation(10, cleanupLimit, 0);
+                context.RuneCLR_DeadlineOperation(epochMode ? 5 : 1, duration100ns, interval);
+                return context;
+            }
+            catch
+            {
+                context.Unload();
+                throw;
+            }
+        }
+
+        private long RuneCLR_BeginCallbackDeadline() => RuneCLR_DeadlineOperation(2, 0, 0);
+        private bool RuneCLR_EndCallbackDeadline(long token) => RuneCLR_DeadlineOperation(3, token, 0) == 1;
+        private long RuneCLR_QueryCallbackDeadline(int field) => RuneCLR_DeadlineOperation(4, 0, field);
+
+        private long RuneCLR_DeadlineOperation(int operation, long value, int interval)
+        {
+            lock (_unloadLock)
+            {
+                VerifyIsAlive();
+                long result = RuneCLR_DeadlineNative(_nativeAssemblyLoadContext, operation, value, interval);
+                GC.KeepAlive(this);
+                return result;
+            }
+        }
+
+        [ErrorHandler(typeof(QCallExceptionStatusMarshaller), ErrorLocation.HiddenLastParameter)]
+        [LibraryImport(RuntimeHelpers.QCall, EntryPoint = "AssemblyNative_RuneCLRDeadline")]
+        private static partial long RuneCLR_DeadlineNative(IntPtr binder, int operation, long value, int interval);
+
         private int RuneCLR_GetExecutionPolicy()
         {
             lock (_unloadLock)

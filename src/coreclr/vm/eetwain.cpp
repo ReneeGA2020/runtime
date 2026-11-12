@@ -18,6 +18,7 @@
 
 #ifdef FEATURE_INTERPRETER
 #include "interpexec.h"
+#include "runeclrdeadline.h"
 #endif // FEATURE_INTERPRETER
 
 #include "exinfo.h"
@@ -2007,6 +2008,7 @@ extern "C" DWORD_PTR STDCALL CallInterpreterFuncletWorker(OBJECTREF throwable, v
 
     StackVal retVal;
 
+    frames.interpMethodContextFrame.ResetRuneCLRCallbackDeadline();
     frames.interpMethodContextFrame.startIp = pOriginalFrame->startIp;
     frames.interpMethodContextFrame.pStack = isFilter ? sp : pOriginalFrame->pStack;
     frames.interpMethodContextFrame.pRetVal = (int8_t*)&retVal;
@@ -2015,7 +2017,42 @@ extern "C" DWORD_PTR STDCALL CallInterpreterFuncletWorker(OBJECTREF throwable, v
     exceptionClauseArgs.ip = (const int32_t *)pHandler;
     exceptionClauseArgs.pFrame = pOriginalFrame;
     exceptionClauseArgs.isFilter = isFilter;
+    // Private RuneCLR experiment: CallFinallyFunclet is the only path that invokes a
+    // funclet without a throwable, so that is a more reliable cleanup signal than the
+    // clause currently latched in the ExInfo.
+    exceptionClauseArgs.isCleanup = !isFilter && throwable == NULL;
     exceptionClauseArgs.throwable = throwable;
+
+    // Private RuneCLR experiment: mark this thread as executing a cleanup funclet of
+    // the frame's callback deadline, which is the only path that may spend the bounded
+    // cleanup budget after the deadline terminated the callback.
+    struct RuneCLRCleanupScope
+    {
+        InterpThreadContext* context;
+        RuneCLRDeadline* previous;
+        RuneCLRCleanupScope(InterpThreadContext* context, InterpMethodContextFrame* frame, bool isCleanup)
+            : context(context), previous(context->runeclrCleanupOwner)
+        {
+            g_runeCLRDeadlineFuncletSeen.fetch_or(isCleanup ? 1 : 2, std::memory_order_relaxed);
+            if (isCleanup)
+            {
+                RuneCLRDeadlineTraceBit(0x20);
+                MethodDesc* method = frame->startIp->Method->methodHnd;
+                AssemblyBinder* binder = method->GetModule()->GetPEAssembly()->GetAssemblyBinder();
+                RuneCLRDeadline* deadline = binder == nullptr ? nullptr : binder->GetRuneCLRCallbackDeadline();
+                if (deadline == nullptr)
+                    RuneCLRDeadlineTraceBit(0x80);
+                else if (!deadline->Enabled())
+                    RuneCLRDeadlineTraceBit(0x40);
+                else
+                {
+                    RuneCLRDeadlineTraceBit(0x100);
+                    context->runeclrCleanupOwner = deadline;
+                }
+            }
+        }
+        ~RuneCLRCleanupScope() { context->runeclrCleanupOwner = previous; }
+    } cleanupScope(threadContext, pOriginalFrame, exceptionClauseArgs.isCleanup);
 
     GCPROTECT_BEGIN(exceptionClauseArgs.throwable);
     InterpExecMethod(&frames.interpreterFrame, &frames.interpMethodContextFrame, threadContext, &exceptionClauseArgs);

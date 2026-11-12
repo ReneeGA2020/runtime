@@ -28,6 +28,7 @@
 #include "CachedInterfaceDispatchPal.h"
 #ifdef FEATURE_INTERPRETER
 #include "interpexec.h"
+#include "runeclrdeadline.h"
 #endif
 
 #ifdef TARGET_WASM
@@ -2052,6 +2053,7 @@ FORCEINLINE static void* ExecuteInterpretedMethodBody(
     }
     frames(pTransitionBlock);
 
+    frames.interpMethodContextFrame.ResetRuneCLRCallbackDeadline();
     frames.interpMethodContextFrame.startIp = dac_cast<PTR_InterpByteCodeStart>(byteCodeAddr);
     frames.interpMethodContextFrame.pStack = sp;
     frames.interpMethodContextFrame.pRetVal = (retBuff != NULL) ? (int8_t*)retBuff : sp;

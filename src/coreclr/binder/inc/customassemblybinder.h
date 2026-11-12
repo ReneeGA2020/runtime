@@ -10,6 +10,8 @@
 
 #if !defined(DACCESS_COMPILE)
 
+#include "runeclrdeadline.h"
+
 class AssemblyLoaderAllocator;
 class PEImage;
 
@@ -26,6 +28,11 @@ public:
         BINDER_SPACE::Assembly** ppAssembly, SString* pDiagnosticInfo = NULL) override;
 
     AssemblyLoaderAllocator* GetLoaderAllocator() override;
+
+    RuneCLRDeadline* GetRuneCLRCallbackDeadline() override
+    {
+        return &m_runeCLRCallbackDeadline;
+    }
 
     bool IsDefault() override
     {
@@ -62,6 +69,7 @@ private:
 
     AssemblyLoaderAllocator* m_pAssemblyLoaderAllocator;
     void* m_loaderAllocatorHandle;
+    RuneCLRDeadline m_runeCLRCallbackDeadline;
 };
 
 #endif // !defined(DACCESS_COMPILE)

@@ -295,6 +295,7 @@ static const Entry s_QCall[] =
     DllImportEntry(AssemblyNative_InitializeInterpreterRequiredLoadContext)
     DllImportEntry(AssemblyNative_RuneCLRGetExecutionPolicyVersion)
     DllImportEntry(AssemblyNative_RuneCLRGetExecutionPolicy)
+    DllImportEntry(AssemblyNative_RuneCLRDeadline)
     DllImportEntry(AssemblyNative_PrepareForAssemblyLoadContextRelease)
     DllImportEntry(AssemblyNative_LoadFromPath)
     DllImportEntry(AssemblyNative_LoadFromStream)
