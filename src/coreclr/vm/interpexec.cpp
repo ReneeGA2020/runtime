@@ -921,12 +921,19 @@ static FORCEINLINE RuneCLRDeadline* RuneCLRResolveCallbackDeadline(InterpMethodC
     if (cached != nullptr)
         return cached == &g_runeCLRDeadlineNone ? nullptr : cached;
 
-    // Same-definition fast path: a callee that lives in the exact module of an already resolved
-    // parent frame shares that binder, and a G1 binder's mode is immutable once claimed. A cached
-    // None therefore means the parent's binder is permanently Executing (Claim returned false),
-    // never a transient Configuring state, so inheriting it cannot hide a later configuration.
-    // Any other case (root frame, different module, unresolved parent, configuring) falls back to
-    // the full GetPEAssembly/GetBinder/Claim resolver below.
+    // Same-definition fast path: the key is the definition owner, i.e. the callee's
+    // MethodDesc->GetModule() being pointer-equal to the parent's. That proves the same binder, and
+    // G1 makes the resolved answer final for the binder's lifetime:
+    //   * a cached deadline pointer means the binder was configured, or was observed while
+    //     Configuring. The latter is inherited as CHECKED: ClaimExecutionMode answers true for the
+    //     Configuring window, so the frame keeps charging and fails closed until the writer
+    //     publishes Configured or rolls back to Fresh. Inheriting the pointer therefore never
+    //     downgrades a frame to unchecked, including across the rollback window.
+    //   * a cached None means either the binder is not a custom binder at all (the default binder
+    //     is structurally without a deadline) or the custom binder was already claimed Executing,
+    //     which is terminal for configuration. It is not "permanently Configuring".
+    // Any other case (root frame, different module, unresolved parent) falls back to the full
+    // GetPEAssembly/GetBinder/Claim resolver below.
     InterpMethodContextFrame* parent = frame->pParent;
     if (parent != nullptr)
     {
@@ -1074,7 +1081,18 @@ static FORCEINLINE bool RuneCLRIsDeadlineTableSafeOpcode(UINT32 opcode) noexcept
     return opcode < INTOP_LAST && s_runeclrDeadlineOpcodeBytes.safe[opcode] != 0;
 }
 
-#if defined(TARGET_WINDOWS)
+// Single compile-time condition for the Windows Release central-switch backend that folds the
+// per-frame mode into the switch index. Every guard in this file (helper linkage, entry macros,
+// mode-offset declaration, dispatch site, shared tails) uses this one macro so a configuration can
+// never end up with a half-enabled backend. Windows Debug/Checked, Wasm and every computed-goto
+// build (Linux Release) keep the previous behaviour.
+#if defined(TARGET_WINDOWS) && !defined(DEBUG) && !defined(TARGET_WASM)
+#define RUNECLR_SWITCH_MODE_DISPATCH 1
+#else
+#define RUNECLR_SWITCH_MODE_DISPATCH 0
+#endif
+
+#if RUNECLR_SWITCH_MODE_DISPATCH
 // Prototype: one shared out-of-line copy instead of ~370 forced inline copies inside the switch.
 NOINLINE static bool RuneCLRChargeCallbackDeadline(RuneCLRDeadline* deadline, InterpMethodContextFrame* frame,
                                                    InterpThreadContext* threadContext, UINT32 opcode,
@@ -1134,7 +1152,7 @@ static FORCEINLINE bool RuneCLRChargeCallbackDeadline(RuneCLRDeadline* deadline,
 #define INTOP_DISPATCH(op) do { opcode = (uint32_t)(op); RUNECLR_CALLBACK_DEADLINE_DISPATCH(); goto *s_dispatchTable[opcode]; } while (0)
 #define INTOP_NEXT INTOP_DISPATCH(ip[0])
 #define RUNECLR_REFRESH_DEADLINE() (runeclrFrameDeadline = RuneCLRResolveCallbackDeadline(pFrame))
-#elif defined(TARGET_WINDOWS) && !defined(DEBUG)
+#elif RUNECLR_SWITCH_MODE_DISPATCH
 // Windows Release central-switch backend: the per-frame checked mode is folded into the switch
 // index, so an unbudgeted frame reaches its handler with no mode test. Every opcode emits a
 // shared handler body plus two entry stubs: the unchecked case jumps straight in, the checked
@@ -1791,7 +1809,7 @@ void InterpExecMethod(InterpreterFrame *pInterpreterFrame, InterpMethodContextFr
     bool runeclrDeadlineBoundary = true;
     // Per-frame checked mode, refreshed at every frame transition below and at MAIN_LOOP.
     RuneCLRDeadline* runeclrFrameDeadline = nullptr;
-#if defined(TARGET_WINDOWS) && !defined(DEBUG) && !USE_COMPUTED_GOTO
+#if RUNECLR_SWITCH_MODE_DISPATCH
     // 0 while the frame is unbudgeted, INTOP_LAST while it must charge. Added to the raw opcode
     // so the dispatch selects the checked or unchecked entry stub with no per-opcode test.
     uint32_t runeclrModeOffset = 0;
@@ -1821,7 +1839,7 @@ MAIN_LOOP:
             opcode = ip[0];
 SWITCH_OPCODE:
             // Also covers debugger bypass dispatches that jump to this label.
-#if defined(TARGET_WINDOWS)
+#if RUNECLR_SWITCH_MODE_DISPATCH
             // Widened index: a raw opcode at or above INTOP_LAST can never wrap into the checked
             // range, and the checked stubs validate the raw opcode before charging.
             switch ((uint64_t)(uint32_t)opcode + (uint64_t)runeclrModeOffset)
@@ -5253,7 +5271,7 @@ do                                                                      \
                     EEPOLICY_HANDLE_FATAL_ERROR_WITH_MESSAGE(COR_E_EXECUTIONENGINE, W("Unimplemented or invalid interpreter opcode\n"));
                     INTOP_NEXT;
             }
-#if defined(TARGET_WINDOWS)
+#if RUNECLR_SWITCH_MODE_DISPATCH
             // Shared tails for the checked entry stubs. Normal fall-through never reaches them.
             continue;
 RUNECLR_DENIED:
@@ -5272,7 +5290,7 @@ RUNECLR_DENIED:
 RUNECLR_INVALID_OPCODE:
             EEPOLICY_HANDLE_FATAL_ERROR_WITH_MESSAGE(COR_E_EXECUTIONENGINE, W("Unimplemented or invalid interpreter opcode\n"));
             UNREACHABLE();
-#endif // TARGET_WINDOWS
+#endif // RUNECLR_SWITCH_MODE_DISPATCH
 #endif // !USE_COMPUTED_GOTO
         }
         UNINSTALL_UNWIND_AND_CONTINUE_HANDLER;

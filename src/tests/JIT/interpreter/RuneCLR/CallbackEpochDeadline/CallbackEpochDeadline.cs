@@ -694,6 +694,17 @@ namespace RuneCLR.CallbackEpochDeadline
                 DeadlineApi.End(budget, token);
             }
             Check("cross-budget-helper-returns", value is long && (long)value == ReferenceSpin(10_000));
+            // Reverse direction: the unbudgeted callee lives in a different module (same assembly,
+            // different ALC) so it must fall back to the full resolver and never charge, and the
+            // parent's checked mode must survive the return.
+            Check("cross-unbudget-helper-uncharged", DeadlineApi.Query(helper, 1) == 0 && DeadlineApi.Query(helper, 2) == 0);
+            // The parent is still checked after returning from the unbudgeted callee: a short
+            // budgeted run must charge and finish.
+            long token2 = DeadlineApi.Begin(budget);
+            object? after = Call(budgetAuthor, "RuneCLR.CallbackEpochDeadline.Author", "Spin", 1_000L);
+            bool endOk = DeadlineApi.End(budget, token2);
+            long admittedAfter = DeadlineApi.Query(budget, 2);
+            Check("cross-parent-mode-restored", endOk && admittedAfter > 0 && after is long);
             helper.Unload();
             budget.Unload();
         }

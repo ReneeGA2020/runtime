@@ -1360,6 +1360,12 @@ extern "C" INT64 QCALLTYPE AssemblyNative_RuneCLRDeadline(INT_PTR ptrNativeAssem
         RuneCLRDeadline* deadline = binder->GetRuneCLRCallbackDeadline();
         if (deadline == nullptr)
             COMPlusThrowNonLocalized(kPlatformNotSupportedException, W("This load context does not carry a callback deadline."));
+        // Operation policy: 1/2/5/10 (configure clock, begin, configure epoch, cleanup budget) are
+        // only meaningful for a custom interpreter-required context, so a binder without that
+        // policy is rejected before anything is touched; 3 (end) validates the calling thread's
+        // active owner and token through End(); 4 (query) intentionally keeps the v1 diagnostic
+        // contract (raw known fields, -1 for unknown fields, no owner check and never throwing)
+        // and must not be guarded in a future consistency edit.
         switch (operation)
         {
             case 1:
