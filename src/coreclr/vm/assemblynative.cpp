@@ -26,6 +26,7 @@
 #include "runeclrdeadline.h"
 #include "encee.h"
 #include "threadsuspend.h"
+#include "stackwalk.h"
 #include <caparser.h>
 
 #include "appdomainnative.hpp"
@@ -1433,6 +1434,138 @@ extern "C" INT64 QCALLTYPE AssemblyNative_RuneCLRDeadline(INT_PTR ptrNativeAssem
 #endif
     END_QCALL;
     return result;
+}
+
+#define RUNECLR_MAX_STACK_ORIGINS 16
+
+// Callback state for the private session-origin experiment. The callback runs with
+// GC_NOTRIGGER, so it may only touch the fixed buffer embedded here.
+struct RuneCLRStackOriginData
+{
+    INT_PTR handles[RUNECLR_MAX_STACK_ORIGINS];
+    int count;
+    int skip;
+    INT_PTR selected;
+    BOOL saturated;
+};
+
+static StackWalkAction RuneCLRStackOriginCallback(CrawlFrame* pCf, void* pData)
+{
+    CONTRACTL
+    {
+        NOTHROW;
+        GC_NOTRIGGER;
+        MODE_ANY;
+    }
+    CONTRACTL_END;
+
+    RuneCLRStackOriginData* pOrigins = (RuneCLRStackOriginData*)pData;
+    MethodDesc* pMethod = pCf->GetFunction();
+    if (pMethod == NULL)
+        return SWA_CONTINUE;
+
+    // Use the executing method's module directly; explicit transition frames do not
+    // always own a managed assembly identity.
+    Module* pModule = pMethod->GetModule();
+    if (pModule == NULL)
+        return SWA_CONTINUE;
+
+    Assembly* pAssembly = pModule->GetAssembly();
+    if (pAssembly == NULL || pAssembly->IsDynamic())
+        return SWA_CONTINUE;
+
+    PEAssembly* pPEAssembly = pModule->GetPEAssembly();
+    if (pPEAssembly == NULL)
+        return SWA_CONTINUE;
+
+    AssemblyBinder* pBinder = pPEAssembly->GetAssemblyBinder();
+    if (pBinder == NULL || pBinder->IsDefault())
+        return SWA_CONTINUE;
+
+    INT_PTR handle = pBinder->GetAssemblyLoadContext();
+    if (handle == 0)
+        return SWA_CONTINUE;
+
+    for (int i = 0; i < pOrigins->count; i++)
+    {
+        if (pOrigins->handles[i] == handle)
+            return SWA_CONTINUE;
+    }
+
+    if (pOrigins->count >= RUNECLR_MAX_STACK_ORIGINS)
+    {
+        // More distinct owners than the managed contract can address. Report the
+        // incompleteness so the policy fails closed instead of truncating an outer owner.
+        pOrigins->saturated = TRUE;
+        return SWA_ABORT;
+    }
+
+    if (pOrigins->count == pOrigins->skip)
+        pOrigins->selected = handle;
+    pOrigins->handles[pOrigins->count++] = handle;
+    return SWA_CONTINUE;
+}
+
+// Private session-origin experiment: hand the managed AssemblyLoadContext of the
+// skip-th innermost distinct non-default binder executing on this thread to managed
+// code as a GC reference, so no raw handle value crosses the boundary. skip < 0
+// probes availability without walking. Returns 1 when the walk was incomplete
+// because more distinct owners exist than the fixed contract allows.
+extern "C" INT32 QCALLTYPE RuneCLRReflectionPolicy_GetStackLoadContext(INT32 skip, QCall::ObjectHandleOnStack retContext, QCallExceptionStatus* qcallError)
+{
+    QCALL_CONTRACT;
+
+    // 0 = complete walk, 1 = more distinct owners than the contract allows,
+    // 2 = the walk itself failed. Both failure codes make the policy fail closed.
+    INT32 status = 0;
+
+    BEGIN_QCALL;
+
+    if (skip >= 0)
+    {
+        // QCall bodies start preemptive. The crawl and the object handoff both require
+        // cooperative mode, and this holder restores preemptive before END_QCALL.
+        GCX_COOP();
+
+        RuneCLRStackOriginData origins;
+        origins.count = 0;
+        origins.skip = skip;
+        origins.selected = 0;
+        origins.saturated = FALSE;
+
+        Thread* pThread = GetThread();
+        if (pThread == NULL)
+        {
+            status = 2;
+        }
+        else
+        {
+            // The ordinary walker already expands InterpreterFrame method-context chains,
+            // so interpreted author frames appear with their MethodDesc.
+            StackWalkAction walk = pThread->StackWalkFrames(RuneCLRStackOriginCallback, &origins, FUNCTIONSONLY, PTR_NULL);
+            if (origins.saturated)
+                status = 1;
+            else if (walk != SWA_CONTINUE)
+                status = 2;
+        }
+
+        if (status == 0 && origins.selected != 0)
+        {
+            OBJECTREF context = ObjectFromHandle((OBJECTHANDLE)origins.selected);
+            if (context == NULL)
+            {
+                // An executing owner that cannot be materialised is not trusted.
+                status = 2;
+            }
+            else
+            {
+                retContext.Set(context);
+            }
+        }
+    }
+
+    END_QCALL;
+    return status;
 }
 
 /*static*/
