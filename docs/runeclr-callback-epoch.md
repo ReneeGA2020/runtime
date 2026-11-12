@@ -1,10 +1,11 @@
 # Optional callback deadline (private interpreter experiment)
 
-Status: this is the publication branch for the Windows x64 callback-deadline experiment. The code
-under test is `e637bd791bd824b3a8118fca47073f6390bcb52a`; this document and the short note in
-`docs/runeclr-dev.md` are the only commits on top of it. The branch is measured against
-`runeclr/dev` at `474eb8ad7230122cc0d34318b25d673da63fd138`. It is not merged into `runeclr/dev`,
-exposes no public API and does not enable deadline charging by default.
+Status: this is the publication branch for the Windows x64 callback-deadline experiment. The
+deadline code under test is `e637bd791bd824b3a8118fca47073f6390bcb52a`; this document and the short
+note in `docs/runeclr-dev.md` are the only commits on top of it, together with a merge of the
+advanced `runeclr/dev` that now carries the opt-in session-origin change. The branch is measured
+against `runeclr/dev` at `0c8c1a682e95c3c8ab57842ed19f7328c66ccc47`. It is not merged into
+`runeclr/dev`, exposes no public API and does not enable deadline charging by default.
 
 ## Contents
 
@@ -21,8 +22,9 @@ exposes no public API and does not enable deadline charging by default.
   (`CLRTestKind=BuildOnly`, `RequiresProcessIsolation`, no xunit wrapper). It is launched directly
   against a built Core_Root and exits 0 when every check passes (1 on a failed check, 2 from its
   watchdog).
-- The code commit changes 14 files against `474eb8ad` (+1870/-1). Every product blob on this
-  publication branch is identical to `e637`; the branch adds documentation only.
+- The branch changes 16 files (+2080/-1) across 11 commits against `0c8c1a68`: the 14-file
+  deadline delta from `e637`, the merge commit that brings in the five session-origin files, and
+  the documentation commits. Every deadline product blob on the branch is identical to `e637`.
 
 ## Private ABI (version 1)
 
@@ -89,7 +91,8 @@ invalid numeric arguments are `ArgumentOutOfRangeException`.
 
 | area | result | evidence |
 | --- | --- | --- |
-| native correctness cohort | 69/69 PASS, exit 0 | final2-correctness.log |
+| combined cohort (deadline + session-origin, merge commit `234c0b7a90f`) | Release build 0/0; native 69/69 PASS; IL tail 5 assertions PASS; source checker 8/8; Windows Debug compile 0/0; both private APIs present (policy version 4, deadline version 1) | integration-merge-20261113/runtime/combined-*.log |
+| native correctness cohort of the pre-merge deadline source | 69/69 PASS, exit 0 | final2-correctness.log |
 | IL tail-call fixture | 5 assertions PASS | final2-tail.log |
 | Windows Debug compile | 0 warnings, 0 errors; Checked backend selection has source proof only | guardfix-debug-build.log |
 | source checker on e637 | 8/8 PASS; negative 41bc/1ac 6/8, S3 prototype 2/8 | phase2 verdict logs |
@@ -97,6 +100,12 @@ invalid numeric arguments are `ArgumentOutOfRangeException`.
 | host join on that delivery | epoch suite 24/24; lifecycle 156/156 ordinary and 156/156 with --require-interpreter; verifier 659 pins, 521-file layout, zero drift | final-hostjoin/ |
 | focused upstream | ContextualReflection, CollectibleStatics, GenericVirtualMethod and InterpreterTester each Expected 100 / Actual 100, exit 0 | final-upstream/ |
 | fixture packaging | project marked BuildOnly; measured fixture launched directly against the Core_Root, exit 0 | project file and native lane logs |
+
+The rows above the combined row were recorded on the pre-merge deadline source (`08e031af`, delivery
+`delivery-1ac`). The combined row is that source merged with the session-origin change and is the
+cohort proposed for `runeclr/dev`. The four focused upstream tests were not re-run on the combined
+runtime: the test harness fails in this environment with `MSB4184 ... ReadAllText('')` before
+building them, so their 100/100 results below belong to the pre-merge source only.
 
 The upstream `InterpreterTester` is the official wrapper and sets `DOTNET_Interpreter=RunInterpreterTests`
 internally; it asserts only the child exit code, so this is compatibility evidence for the documented
