@@ -921,6 +921,28 @@ static FORCEINLINE RuneCLRDeadline* RuneCLRResolveCallbackDeadline(InterpMethodC
     if (cached != nullptr)
         return cached == &g_runeCLRDeadlineNone ? nullptr : cached;
 
+    // Same-definition fast path: a callee that lives in the exact module of an already resolved
+    // parent frame shares that binder, and a G1 binder's mode is immutable once claimed. A cached
+    // None therefore means the parent's binder is permanently Executing (Claim returned false),
+    // never a transient Configuring state, so inheriting it cannot hide a later configuration.
+    // Any other case (root frame, different module, unresolved parent, configuring) falls back to
+    // the full GetPEAssembly/GetBinder/Claim resolver below.
+    InterpMethodContextFrame* parent = frame->pParent;
+    if (parent != nullptr)
+    {
+        RuneCLRDeadline* parentCached = parent->runeclrCallbackDeadline;
+        if (parentCached != nullptr)
+        {
+            MethodDesc* method = frame->startIp->Method->methodHnd;
+            MethodDesc* parentMethod = parent->startIp->Method->methodHnd;
+            if (method->GetModule() == parentMethod->GetModule())
+            {
+                frame->runeclrCallbackDeadline = parentCached;
+                return parentCached == &g_runeCLRDeadlineNone ? nullptr : parentCached;
+            }
+        }
+    }
+
     RuneCLRDeadline* deadline = nullptr;
     MethodDesc* method = frame->startIp->Method->methodHnd;
     AssemblyBinder* binder = method->GetModule()->GetPEAssembly()->GetAssemblyBinder();
