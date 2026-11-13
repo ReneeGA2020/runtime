@@ -1093,16 +1093,35 @@ static FORCEINLINE bool RuneCLRIsDeadlineTableSafeOpcode(UINT32 opcode) noexcept
 #endif
 
 #if RUNECLR_SWITCH_MODE_DISPATCH
+// The two per-invocation charge locals, kept as one object so the helper takes a single reference.
+struct RuneCLRDispatchState
+{
+    const void* frame = nullptr;
+    bool boundary = true;
+};
+
 // Prototype: one shared out-of-line copy instead of ~370 forced inline copies inside the switch.
-NOINLINE static bool RuneCLRChargeCallbackDeadline(RuneCLRDeadline* deadline, InterpMethodContextFrame* frame,
-                                                   InterpThreadContext* threadContext, UINT32 opcode,
-                                                   const void*& deadlineFrame, bool& deadlineBoundary)
+// Four parameters fit the Win64 argument registers; the deadline comes from the frame's resolved cache,
+// which the refresh invariant guarantees equals the old explicit argument at every checked entry.
+NOINLINE static bool RuneCLRChargeCallbackDeadline(InterpMethodContextFrame* frame,
+                                                   InterpThreadContext* threadContext,
+                                                   UINT32 opcode, RuneCLRDispatchState& state)
 #else
 static FORCEINLINE bool RuneCLRChargeCallbackDeadline(RuneCLRDeadline* deadline, InterpMethodContextFrame* frame,
                                                       InterpThreadContext* threadContext, UINT32 opcode,
                                                       const void*& deadlineFrame, bool& deadlineBoundary)
 #endif
 {
+#if RUNECLR_SWITCH_MODE_DISPATCH
+    // A checked entry always carries a resolved, non-sentinel deadline in the frame cache. If that ever
+    // stops holding, deny rather than admit without the checks below.
+    RuneCLRDeadline* deadline = frame->runeclrCallbackDeadline;
+    if (deadline == nullptr || deadline == &g_runeCLRDeadlineNone)
+    {
+        _ASSERTE(!"checked entry without a resolved deadline");
+        return false;
+    }
+#endif
 
     // Only a terminated deadline converts the cleanup funclet to the bounded budget;
     // an ordinary finally of a running callback keeps the normal deadline check.
@@ -1116,9 +1135,15 @@ static FORCEINLINE bool RuneCLRChargeCallbackDeadline(RuneCLRDeadline* deadline,
     }
 
     bool safe = RuneCLRIsDeadlineTableSafeOpcode(opcode);
+#if RUNECLR_SWITCH_MODE_DISPATCH
+    bool boundary = state.boundary || state.frame != frame || !safe;
+    state.frame = frame;
+    state.boundary = !safe;
+#else
     bool boundary = deadlineBoundary || deadlineFrame != frame || !safe;
     deadlineFrame = frame;
     deadlineBoundary = !safe;
+#endif
     return deadline->Check(GetThread(), boundary);
 }
 
@@ -1166,7 +1191,7 @@ static_assert((uint64_t)INTOP_LAST * 3 <= (uint64_t)UINT32_MAX, "interpreter swi
     case (uint32_t)(x): goto RUNECLR_BODY_ ## x; \
     case RUNECLR_SWITCH_CHECKED(x): \
         if (opcode != (uint32_t)(x)) goto RUNECLR_INVALID_OPCODE; \
-        if (!RuneCLRChargeCallbackDeadline(runeclrFrameDeadline, pFrame, pThreadContext, opcode, runeclrDeadlineFrame, runeclrDeadlineBoundary)) \
+        if (!RuneCLRChargeCallbackDeadline(pFrame, pThreadContext, opcode, runeclrDispatchState)) \
             goto RUNECLR_DENIED; \
         goto RUNECLR_BODY_ ## x; \
     RUNECLR_BODY_ ## x:
@@ -1181,7 +1206,11 @@ static_assert((uint64_t)INTOP_LAST * 3 <= (uint64_t)UINT32_MAX, "interpreter swi
 #define INTOP_CASE(x) case x:
 #define INTOP_DISPATCH(op) opcode = (uint32_t)(op); goto SWITCH_OPCODE
 #define INTOP_NEXT break
-#define RUNECLR_REFRESH_DEADLINE() (runeclrFrameDeadline = RuneCLRResolveCallbackDeadline(pFrame))
+#define RUNECLR_REFRESH_DEADLINE() do { \
+    runeclrFrameDeadline = RuneCLRResolveCallbackDeadline(pFrame); \
+    _ASSERTE((runeclrFrameDeadline == nullptr) == (pFrame->runeclrCallbackDeadline == &g_runeCLRDeadlineNone)); \
+    _ASSERTE(runeclrFrameDeadline == nullptr || runeclrFrameDeadline == pFrame->runeclrCallbackDeadline); \
+} while (0)
 #endif // USE_COMPUTED_GOTO
 #define INTOP_EXIT_FRAME_NO_LOCALLOC goto EXIT_FRAME
 #define INTOP_EXIT_FRAME do { pThreadContext->frameDataAllocator.PopInfo(pFrame); INTOP_EXIT_FRAME_NO_LOCALLOC; } while (0)
@@ -1805,8 +1834,7 @@ void InterpExecMethod(InterpreterFrame *pInterpreterFrame, InterpMethodContextFr
     MethodDesc* targetMethod;
     uint32_t opcode;
     InterpMethodContextFrame* const runeclrInvocationFrame = pFrame;
-    const void* runeclrDeadlineFrame = nullptr;
-    bool runeclrDeadlineBoundary = true;
+    RuneCLRDispatchState runeclrDispatchState;
     // Per-frame checked mode, refreshed at every frame transition below and at MAIN_LOOP.
     RuneCLRDeadline* runeclrFrameDeadline = nullptr;
 #if RUNECLR_SWITCH_MODE_DISPATCH
