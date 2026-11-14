@@ -151,7 +151,9 @@ public:
     // Clock mode: the deadline is measured with the monotonic clock.
     ConfigureResult Configure(INT64 duration100ns, INT32 interval) noexcept
     {
-        if (duration100ns <= 0 || (interval != 1 && interval != 100 && interval != 1000))
+        // 10000 is accepted for the large-interval experiment; the default interval is unchanged.
+        if (duration100ns <= 0 ||
+            (interval != 1 && interval != 100 && interval != 1000 && interval != 10000))
             return ConfigureResult::Invalid;
 
         LONG expected = RuneCLRDeadlineFresh;
@@ -196,7 +198,9 @@ public:
     // is therefore < 2 declared periods plus ticker scheduling and poll-interval delays.
     ConfigureResult ConfigureEpoch(INT64 duration100ns, INT32 interval) noexcept
     {
-        if (duration100ns <= 0 || (interval != 1 && interval != 100 && interval != 1000))
+        // 10000 is accepted for the large-interval experiment; the default interval is unchanged.
+        if (duration100ns <= 0 ||
+            (interval != 1 && interval != 100 && interval != 1000 && interval != 10000))
             return ConfigureResult::Invalid;
 
         LONG expected = RuneCLRDeadlineFresh;
