@@ -1101,6 +1101,14 @@ static FORCEINLINE bool RuneCLRIsDeadlineTableSafeOpcode(UINT32 opcode) noexcept
 #define RUNECLR_ABI4_DISPATCH 0
 #endif
 
+// Large-interval segment fast path: same configuration as the four-argument helper, because it
+// reuses the per-frame dispatch state and only exists on the Windows x64 Release folded bank.
+#if RUNECLR_ABI4_DISPATCH
+#define RUNECLR_SEGMENT_DISPATCH 1
+#else
+#define RUNECLR_SEGMENT_DISPATCH 0
+#endif
+
 #if RUNECLR_ABI4_DISPATCH
 // The two per-invocation charge locals, kept as one object so the helper takes a single reference.
 struct RuneCLRDispatchState
@@ -1206,25 +1214,35 @@ static_assert((uint64_t)INTOP_LAST * 3 <= (uint64_t)UINT32_MAX, "interpreter swi
     case (uint32_t)(x): goto RUNECLR_BODY_ ## x; \
     case RUNECLR_SWITCH_CHECKED(x): \
         if (opcode != (uint32_t)(x)) goto RUNECLR_INVALID_OPCODE; \
-        if (runeclrFrameDeadline != nullptr && \
-            runeclrSegmentBudget != 0 && (s_runeclrDeadlineOpcodeBytes.safe[(uint32_t)(x)] != 0) && \
-            !runeclrDeadlineBoundary && runeclrDeadlineFrame == pFrame && \
+#if RUNECLR_SEGMENT_DISPATCH \
+        if (runeclrSegmentBudget != 0 && (s_runeclrDeadlineOpcodeBytes.safe[(uint32_t)(x)] != 0) && \
+            !runeclrDispatchState.boundary && runeclrDispatchState.frame == pFrame && \
+            runeclrFrameDeadline->CallbackToken() == runeclrSegmentToken && \
             runeclrFrameDeadline->AdmitSegmentOpcode()) \
         { \
             --runeclrSegmentBudget; \
             goto RUNECLR_BODY_ ## x; \
         } \
+#endif \
         runeclrSegmentBudget = 0; \
         if (!RUNECLR_CHARGE_CHECKED()) \
             goto RUNECLR_DENIED; \
-        if (runeclrFrameDeadline != nullptr) \
+#if RUNECLR_SEGMENT_DISPATCH \
+        if (runeclrFrameDeadline->SegmentGrantable()) \
+        { \
+            runeclrSegmentToken = runeclrFrameDeadline->CallbackToken(); \
             runeclrSegmentBudget = (UINT32)runeclrFrameDeadline->SegmentBudget(64); \
+        } \
+#endif \
         goto RUNECLR_BODY_ ## x; \
     RUNECLR_BODY_ ## x:
 #define INTOP_DISPATCH(op) opcode = (uint32_t)(op); goto SWITCH_OPCODE
 #define INTOP_NEXT break
 #define RUNECLR_REFRESH_DEADLINE() do { \
     runeclrFrameDeadline = RuneCLRResolveCallbackDeadline(pFrame); \
+#if RUNECLR_SEGMENT_DISPATCH \
+    runeclrSegmentBudget = 0; \
+#endif \
     runeclrModeOffset = runeclrFrameDeadline != nullptr ? (uint32_t)INTOP_LAST : 0u; \
     _ASSERTE((runeclrModeOffset != 0) == (runeclrFrameDeadline != nullptr)); \
 } while (0)
@@ -1860,10 +1878,12 @@ void InterpExecMethod(InterpreterFrame *pInterpreterFrame, InterpMethodContextFr
     MethodDesc* targetMethod;
     uint32_t opcode;
     InterpMethodContextFrame* const runeclrInvocationFrame = pFrame;
-#if RUNECLR_SWITCH_MODE_DISPATCH
+#if RUNECLR_SEGMENT_DISPATCH
     // Opcodes this frame may admit without re-entering the helper. Granted only by a successful
-    // full check and dropped whenever a boundary (frame change or unsafe opcode) is dispatched.
+    // full check, cleared on every refresh (frame transition or MAIN_LOOP entry) and on every
+    // boundary dispatch; the token pins it to one callback generation.
     UINT32 runeclrSegmentBudget = 0;
+    INT64 runeclrSegmentToken = 0;
 #endif
 #if RUNECLR_ABI4_DISPATCH
     RuneCLRDispatchState runeclrDispatchState;

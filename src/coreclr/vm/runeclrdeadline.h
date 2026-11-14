@@ -347,19 +347,29 @@ public:
     // back to the full path. Nothing here decides negation, ownership or cleanup.
     FORCEINLINE bool AdmitSegmentOpcode() noexcept
     {
+        // Declining must leave every counter untouched: the full path re-does both updates.
         if (VolatileLoad(&m_failure) != 0)
             return false;
 
         INT32 next = m_pending + 1;
         if (next >= m_interval)
-        {
-            m_pending = next;
             return false;
-        }
 
         m_pending = next;
         m_admitted = m_admitted + 1;
         return true;
+    }
+
+    // Identifies the current callback generation. A host End/Begin pair leaves active/owner/failure
+    // unchanged but advances the token, so a cached segment can be validated against it.
+    FORCEINLINE INT64 CallbackToken() const noexcept { return m_token; }
+
+    // True only when a full check has just validated a live, owned callback. A terminated deadline
+    // (including the bounded-cleanup path) is never grantable, so no segment survives termination.
+    FORCEINLINE bool SegmentGrantable() const noexcept
+    {
+        return VolatileLoad(&m_failure) == 0 && VolatileLoad(&m_active) == 1 &&
+               VolatileLoad(&m_phase) == PhaseExecution;
     }
 
     // Number of further opcodes that can be admitted without a poll, capped by the caller's quantum.
