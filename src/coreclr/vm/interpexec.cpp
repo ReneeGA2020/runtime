@@ -1109,6 +1109,33 @@ static FORCEINLINE bool RuneCLRIsDeadlineTableSafeOpcode(UINT32 opcode) noexcept
 #define RUNECLR_SEGMENT_DISPATCH 0
 #endif
 
+// Segment helpers as macros so no preprocessor directive ever appears inside a replacement list.
+// The non-segment forms are empty, keeping every other configuration on its previous code.
+#if RUNECLR_SEGMENT_DISPATCH
+#define RUNECLR_SEGMENT_TRY(x) do { \
+    if (runeclrSegmentBudget != 0 && (s_runeclrDeadlineOpcodeBytes.safe[(uint32_t)(x)] != 0) && \
+        !runeclrDispatchState.boundary && runeclrDispatchState.frame == pFrame && \
+        runeclrFrameDeadline->CallbackToken() == runeclrSegmentToken && \
+        runeclrFrameDeadline->AdmitSegmentOpcode()) \
+    { \
+        --runeclrSegmentBudget; \
+        goto RUNECLR_BODY_ ## x; \
+    } \
+} while (0)
+#define RUNECLR_SEGMENT_RESET() do { runeclrSegmentBudget = 0; } while (0)
+#define RUNECLR_SEGMENT_GRANT() do { \
+    if (runeclrFrameDeadline->SegmentGrantable()) \
+    { \
+        runeclrSegmentToken = runeclrFrameDeadline->CallbackToken(); \
+        runeclrSegmentBudget = (UINT32)runeclrFrameDeadline->SegmentBudget(64); \
+    } \
+} while (0)
+#else
+#define RUNECLR_SEGMENT_TRY(x) do { } while (0)
+#define RUNECLR_SEGMENT_RESET() do { } while (0)
+#define RUNECLR_SEGMENT_GRANT() do { } while (0)
+#endif
+
 #if RUNECLR_ABI4_DISPATCH
 // The two per-invocation charge locals, kept as one object so the helper takes a single reference.
 struct RuneCLRDispatchState
@@ -1214,35 +1241,18 @@ static_assert((uint64_t)INTOP_LAST * 3 <= (uint64_t)UINT32_MAX, "interpreter swi
     case (uint32_t)(x): goto RUNECLR_BODY_ ## x; \
     case RUNECLR_SWITCH_CHECKED(x): \
         if (opcode != (uint32_t)(x)) goto RUNECLR_INVALID_OPCODE; \
-#if RUNECLR_SEGMENT_DISPATCH \
-        if (runeclrSegmentBudget != 0 && (s_runeclrDeadlineOpcodeBytes.safe[(uint32_t)(x)] != 0) && \
-            !runeclrDispatchState.boundary && runeclrDispatchState.frame == pFrame && \
-            runeclrFrameDeadline->CallbackToken() == runeclrSegmentToken && \
-            runeclrFrameDeadline->AdmitSegmentOpcode()) \
-        { \
-            --runeclrSegmentBudget; \
-            goto RUNECLR_BODY_ ## x; \
-        } \
-#endif \
-        runeclrSegmentBudget = 0; \
+        RUNECLR_SEGMENT_TRY(x); \
+        RUNECLR_SEGMENT_RESET(); \
         if (!RUNECLR_CHARGE_CHECKED()) \
             goto RUNECLR_DENIED; \
-#if RUNECLR_SEGMENT_DISPATCH \
-        if (runeclrFrameDeadline->SegmentGrantable()) \
-        { \
-            runeclrSegmentToken = runeclrFrameDeadline->CallbackToken(); \
-            runeclrSegmentBudget = (UINT32)runeclrFrameDeadline->SegmentBudget(64); \
-        } \
-#endif \
+        RUNECLR_SEGMENT_GRANT(); \
         goto RUNECLR_BODY_ ## x; \
     RUNECLR_BODY_ ## x:
 #define INTOP_DISPATCH(op) opcode = (uint32_t)(op); goto SWITCH_OPCODE
 #define INTOP_NEXT break
 #define RUNECLR_REFRESH_DEADLINE() do { \
     runeclrFrameDeadline = RuneCLRResolveCallbackDeadline(pFrame); \
-#if RUNECLR_SEGMENT_DISPATCH \
-    runeclrSegmentBudget = 0; \
-#endif \
+    RUNECLR_SEGMENT_RESET(); \
     runeclrModeOffset = runeclrFrameDeadline != nullptr ? (uint32_t)INTOP_LAST : 0u; \
     _ASSERTE((runeclrModeOffset != 0) == (runeclrFrameDeadline != nullptr)); \
 } while (0)
