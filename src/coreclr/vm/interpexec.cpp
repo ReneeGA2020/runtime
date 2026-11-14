@@ -1113,27 +1113,19 @@ static FORCEINLINE bool RuneCLRIsDeadlineTableSafeOpcode(UINT32 opcode) noexcept
 // The non-segment forms are empty, keeping every other configuration on its previous code.
 #if RUNECLR_SEGMENT_DISPATCH
 #define RUNECLR_SEGMENT_TRY(x) do { \
-    if (runeclrSegmentBudget != 0 && (s_runeclrDeadlineOpcodeBytes.safe[(uint32_t)(x)] != 0) && \
+    if (runeclrDispatchState.segmentBudget != 0 && (s_runeclrDeadlineOpcodeBytes.safe[(uint32_t)(x)] != 0) && \
         !runeclrDispatchState.boundary && runeclrDispatchState.frame == pFrame && \
-        runeclrFrameDeadline->CallbackToken() == runeclrSegmentToken && \
+        runeclrFrameDeadline->CallbackToken() == runeclrDispatchState.segmentToken && \
         runeclrFrameDeadline->AdmitSegmentOpcode()) \
     { \
-        --runeclrSegmentBudget; \
+        --runeclrDispatchState.segmentBudget; \
         goto RUNECLR_BODY_ ## x; \
     } \
 } while (0)
-#define RUNECLR_SEGMENT_RESET() do { runeclrSegmentBudget = 0; } while (0)
-#define RUNECLR_SEGMENT_GRANT() do { \
-    if (runeclrFrameDeadline->SegmentGrantable()) \
-    { \
-        runeclrSegmentToken = runeclrFrameDeadline->CallbackToken(); \
-        runeclrSegmentBudget = (UINT32)runeclrFrameDeadline->SegmentBudget(64); \
-    } \
-} while (0)
+#define RUNECLR_SEGMENT_RESET() do { runeclrDispatchState.segmentBudget = 0; } while (0)
 #else
 #define RUNECLR_SEGMENT_TRY(x) do { } while (0)
 #define RUNECLR_SEGMENT_RESET() do { } while (0)
-#define RUNECLR_SEGMENT_GRANT() do { } while (0)
 #endif
 
 #if RUNECLR_ABI4_DISPATCH
@@ -1142,6 +1134,8 @@ struct RuneCLRDispatchState
 {
     const void* frame = nullptr;
     bool boundary = true;
+    INT64 segmentToken = 0;
+    UINT32 segmentBudget = 0;
 };
 
 // Four parameters fit the Win64 argument registers; the deadline comes from the frame's resolved cache,
@@ -1194,7 +1188,21 @@ static FORCEINLINE bool RuneCLRChargeCallbackDeadline(RuneCLRDeadline* deadline,
     deadlineFrame = frame;
     deadlineBoundary = !safe;
 #endif
+#if RUNECLR_SEGMENT_DISPATCH
+    if (!deadline->Check(GetThread(), boundary))
+        return false;
+
+    // Grant the segment here, in the one out-of-line helper, instead of in every checked stub.
+    // The terminated-cleanup branch above returns before this point, so it never grants.
+    if (deadline->SegmentGrantable())
+    {
+        state.segmentToken = deadline->CallbackToken();
+        state.segmentBudget = (UINT32)deadline->SegmentBudget(64);
+    }
+    return true;
+#else
     return deadline->Check(GetThread(), boundary);
+#endif
 }
 
 // A denied ordinary body throws under the existing managed-dispatch handlers.
@@ -1245,7 +1253,6 @@ static_assert((uint64_t)INTOP_LAST * 3 <= (uint64_t)UINT32_MAX, "interpreter swi
         RUNECLR_SEGMENT_RESET(); \
         if (!RUNECLR_CHARGE_CHECKED()) \
             goto RUNECLR_DENIED; \
-        RUNECLR_SEGMENT_GRANT(); \
         goto RUNECLR_BODY_ ## x; \
     RUNECLR_BODY_ ## x:
 #define INTOP_DISPATCH(op) opcode = (uint32_t)(op); goto SWITCH_OPCODE
@@ -1888,13 +1895,7 @@ void InterpExecMethod(InterpreterFrame *pInterpreterFrame, InterpMethodContextFr
     MethodDesc* targetMethod;
     uint32_t opcode;
     InterpMethodContextFrame* const runeclrInvocationFrame = pFrame;
-#if RUNECLR_SEGMENT_DISPATCH
-    // Opcodes this frame may admit without re-entering the helper. Granted only by a successful
-    // full check, cleared on every refresh (frame transition or MAIN_LOOP entry) and on every
-    // boundary dispatch; the token pins it to one callback generation.
-    UINT32 runeclrSegmentBudget = 0;
-    INT64 runeclrSegmentToken = 0;
-#endif
+// Segment budget and generation live in runeclrDispatchState, which the helper can update.
 #if RUNECLR_ABI4_DISPATCH
     RuneCLRDispatchState runeclrDispatchState;
 #else

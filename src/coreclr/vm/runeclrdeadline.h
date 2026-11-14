@@ -352,7 +352,11 @@ public:
     FORCEINLINE bool AdmitSegmentOpcode() noexcept
     {
         // Declining must leave every counter untouched: the full path re-does both updates.
-        if (VolatileLoad(&m_failure) != 0)
+        // VolatileLoad's implementation copies through a volatile temporary, so passing the
+        // volatile pointer makes that temporary volatile too. Naming LONG as the template
+        // argument keeps the field access and the barrier volatile and only drops volatile from
+        // the temporary the helper returns.
+        if (VolatileLoad<LONG>(const_cast<LONG const*>(&m_failure)) != 0)
             return false;
 
         INT32 next = m_pending + 1;
