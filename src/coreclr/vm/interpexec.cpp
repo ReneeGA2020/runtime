@@ -1206,8 +1206,19 @@ static_assert((uint64_t)INTOP_LAST * 3 <= (uint64_t)UINT32_MAX, "interpreter swi
     case (uint32_t)(x): goto RUNECLR_BODY_ ## x; \
     case RUNECLR_SWITCH_CHECKED(x): \
         if (opcode != (uint32_t)(x)) goto RUNECLR_INVALID_OPCODE; \
+        if (runeclrFrameDeadline != nullptr && \
+            runeclrSegmentBudget != 0 && (s_runeclrDeadlineOpcodeBytes.safe[(uint32_t)(x)] != 0) && \
+            !runeclrDeadlineBoundary && runeclrDeadlineFrame == pFrame && \
+            runeclrFrameDeadline->AdmitSegmentOpcode()) \
+        { \
+            --runeclrSegmentBudget; \
+            goto RUNECLR_BODY_ ## x; \
+        } \
+        runeclrSegmentBudget = 0; \
         if (!RUNECLR_CHARGE_CHECKED()) \
             goto RUNECLR_DENIED; \
+        if (runeclrFrameDeadline != nullptr) \
+            runeclrSegmentBudget = (UINT32)runeclrFrameDeadline->SegmentBudget(64); \
         goto RUNECLR_BODY_ ## x; \
     RUNECLR_BODY_ ## x:
 #define INTOP_DISPATCH(op) opcode = (uint32_t)(op); goto SWITCH_OPCODE
@@ -1849,6 +1860,11 @@ void InterpExecMethod(InterpreterFrame *pInterpreterFrame, InterpMethodContextFr
     MethodDesc* targetMethod;
     uint32_t opcode;
     InterpMethodContextFrame* const runeclrInvocationFrame = pFrame;
+#if RUNECLR_SWITCH_MODE_DISPATCH
+    // Opcodes this frame may admit without re-entering the helper. Granted only by a successful
+    // full check and dropped whenever a boundary (frame change or unsafe opcode) is dispatched.
+    UINT32 runeclrSegmentBudget = 0;
+#endif
 #if RUNECLR_ABI4_DISPATCH
     RuneCLRDispatchState runeclrDispatchState;
 #else

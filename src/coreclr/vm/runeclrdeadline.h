@@ -339,6 +339,38 @@ public:
     // Bounded cleanup: only a finally/fault funclet of a terminated callback reaches this.
     // When the allowance is exhausted the phase is latched and the remaining author cleanup
     // is abandoned rather than run unbounded.
+    // Large-interval segment support. Called only after a full Check() has validated this
+    // callback for the current frame; the caller keeps a per-frame budget of opcodes it may
+    // admit without re-entering the helper. Every call still does the sticky-failure probe and
+    // performs exactly the counters a non-boundary Check() would: pending +1 and admitted +1,
+    // and it refuses (returns false) when the interval would require a poll, so the caller falls
+    // back to the full path. Nothing here decides negation, ownership or cleanup.
+    FORCEINLINE bool AdmitSegmentOpcode() noexcept
+    {
+        if (VolatileLoad(&m_failure) != 0)
+            return false;
+
+        INT32 next = m_pending + 1;
+        if (next >= m_interval)
+        {
+            m_pending = next;
+            return false;
+        }
+
+        m_pending = next;
+        m_admitted = m_admitted + 1;
+        return true;
+    }
+
+    // Number of further opcodes that can be admitted without a poll, capped by the caller's quantum.
+    FORCEINLINE INT32 SegmentBudget(INT32 quantum) const noexcept
+    {
+        INT32 room = m_interval - m_pending - 1;
+        if (room < 0)
+            return 0;
+        return room < quantum ? room : quantum;
+    }
+
     FORCEINLINE bool TryChargeCleanup(void* owner) noexcept
     {
         if (!Enabled() || Phase() != PhaseTerminated)
