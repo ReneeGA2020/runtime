@@ -11,19 +11,29 @@ The fork's default branch keeps tracking upstream and is not modified by this po
   and 275ff40cbf142e7eb9a39acff98a6242a0b83519 (dotnet/runtime main, 2026-11-10).
 - Content: the reflection/session-policy work plus that upstream snapshot. It does
   **not** include the later instruction-meter, terminal-prototype, batch-interval,
-  mobile or callback-epoch patch stacks; those remain separate experiments.
+  mobile or callback-epoch patch stacks; those remain separate experiments. This
+  bullet describes the initial commit only; the 2026-11-13 merge `b747ab4d` later added the
+  foundational opt-in callback-deadline increment described below.
 
-## Private callback-epoch increment (2026-11-12)
+## Foundational callback-epoch increment (merged 2026-11-13)
 
-The optional callback-deadline experiment is published separately as
-`runeclr/optional-callback-epoch-integration-final-20261112`, a documentation-only descendant of
-tested code commit `e637bd791bd824b3a8118fca47073f6390bcb52a` (measured against `runeclr/dev` at
-`474eb8ad`). It is **not** promoted into `runeclr/dev` and does not enable deadlines by default: the clock
-path stays the default, the interpreter checkpoint only charges a configured callback, and the
-runtime owns no timer or thread. The private version-1 ABI, the configure-before-first-execution
+The opt-in interpreter callback deadline is part of this branch as of merge commit
+`b747ab4d51d8da563b709a8b08ba69d15a314c03` (Merge pull request #2: opt-in interpreter callback
+deadline, combined with session-origin dev). It stays **opt-in**: the clock path remains the
+default, configuration must happen on a fresh interpreter-required context before its first
+execution, and the runtime owns no timer thread of its own. The `InterpExecMethod` checkpoint only
+charges a configured callback. The private version-1 ABI, the configure-before-first-execution
 contract, the recorded Windows x64 evidence and the limits are in
-[the callback-epoch document](runeclr-callback-epoch.md). The initial baseline recorded below
-stays the historical record for this branch.
+[the callback-epoch document](runeclr-callback-epoch.md).
+
+The earlier publication branch `runeclr/optional-callback-epoch-integration-final-20261112` (tested
+code `e637bd791bd824b3a8118fca47073f6390bcb52a`, measured against the initial baseline at `474eb8ad`) remains
+the historical reference for that increment. The initial baseline recorded below is kept as the
+historical record; it describes the initial commit, not the current tip.
+
+Large-interval optimization experiments are archived on two separate experiment branches and
+are **not** merged into this branch. See
+[the large-interval epoch record](runeclr-epoch-large-interval-20261114.md).
 
 ## Cadence
 
