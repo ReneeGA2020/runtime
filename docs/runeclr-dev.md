@@ -35,6 +35,48 @@ Large-interval optimization experiments are archived on two separate experiment 
 are **not** merged into this branch. See
 [the large-interval epoch record](runeclr-epoch-large-interval-20261114.md).
 
+## 2026-11-16 upstream sync
+
+The 2026-11-16 merge advanced the Microsoft upstream pin from
+`275ff40cbf142e7eb9a39acff98a6242a0b83519` to
+`a33eebbe8e6cc76c22f30ac9b9f166ac6469d088` at merge commit
+`98f6629cb103f7dd398d8514d80137b2342dc07e` (parent `bcefcb77`).
+The merge-triggered follow-ups are the QCall ordering fix
+`6ed455709e7` and this documentation update.
+
+Upstream split `src/coreclr/vm/qcallentrypoints.cpp` into separate entrypoint
+tables. The five RuneCLR QCall entries were moved into the new
+`src/coreclr/vm/runtimehelpers.cpp` table. That table binary-searches by
+`strcmp`, so the entries are kept in sorted order; an earlier placement
+caused a startup access violation and is retained only as the reason for the
+follow-up fix. Both sides also changed the JIT-EE interface, so the merged
+interface uses the new GUID
+`9d56111e-110b-4d3e-9866-e1950fafb83a`.
+
+Windows x64 Release verification on the merged source:
+
+- `./build.cmd -subset clr+libs -configuration Release -arch x64 -clrinterpreter`:
+  0 warnings, 0 errors.
+- `src/tests/build.cmd -arch x64 release GenerateLayoutOnly`: Core_Root
+  generated; its runtime binaries matched the private testhost layout.
+- `RuneCLR.Runtime.Tests`: **157/157** ordinary and **157/157** with
+  `--require-interpreter`; the required lane reported
+  `SESSION_EXECUTION_POLICY required-interpreter version=1`.
+- `RuneCLR.ReflectionPolicy.Tests --require-private-runtime`: PASS,
+  `cases=123`.
+- `RuneCLR.SampleHost --collect`: three contexts collected; the late-built
+  map collected in both ordinary and required lanes.
+- Upstream `JIT/interpreter/InterpreterTester`: Expected 100 / Actual 100,
+  PASSED.
+- Session-origin fixed lane (`--expect-fixed --require-origin` with the
+  origin-scan switch enabled): `fixedModeObserved=true`,
+  capability `1`.
+
+This is Windows x64 Release compatibility evidence only. Release does not
+provide the Debug-only interpreter dump/list diagnostics, so this record does
+not independently prove per-method interpreted entry. It makes no iOS,
+physical-device, mobile, R2R composition or performance claim.
+
 ## Cadence
 
 Merge Microsoft upstream **every two weeks, Monday 10:00 Asia/Shanghai**. The
