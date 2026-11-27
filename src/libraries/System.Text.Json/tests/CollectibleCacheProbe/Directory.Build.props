@@ -1,0 +1,11 @@
+<Project>
+  <!-- Standalone probe: intentionally independent of the runtime test host. -->
+  <PropertyGroup>
+    <TargetFramework>net12.0</TargetFramework>
+    <LangVersion>preview</LangVersion>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <UseAppHost>false</UseAppHost>
+    <EnableNETAnalyzers>false</EnableNETAnalyzers>
+  </PropertyGroup>
+</Project>

@@ -1,0 +1,7 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup><OutputType>Exe</OutputType></PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="../Contracts/Contracts.csproj" />
+    <ProjectReference Include="../Fixture/Fixture.csproj" ReferenceOutputAssembly="false" />
+  </ItemGroup>
+</Project>
