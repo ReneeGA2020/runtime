@@ -46,6 +46,11 @@ nested generic wrappers, arrays, stack addition, immutable collection factories,
 large parameterized constructors. Both rounds execute in one process. An independent foreign
 context and Default DTO remain usable across the subject unloads. All retained observations
 are scalar values or WeakReferences; collection occurs outside the subject helper frame.
+Session options, resolver and configured/cached cross-context type-info also have weak-reference
+release assertions. Held controls retain that cached metadata, and assert that **both** subject
+contexts remain alive until the user reference is released. Distinct nondefault DTO values,
+nonempty collections and constructor inputs are checked by JSON value equality and exact
+deserialized type identity, rather than counting successful calls alone.
 
 The factory cases include each of the four small-constructor delegate argument slots while
 the constructor/key remain stable, covariant constructor results, collectible receivers,

@@ -33,6 +33,8 @@ internal static class Program
         {
             Type = Context.LoadFromAssemblyPath(path).GetType("CollectibleCacheProbe.Fixture.Dto")!;
             Value = Activator.CreateInstance(Type)!;
+            Type.GetProperty("Text")!.SetValue(Value, "foreign");
+            Type.GetField("Number")!.SetValue(Value, 303);
             Options = NewOptions();
         }
     }
@@ -93,13 +95,21 @@ internal static class Program
             WeakReference[] refs = Exercise(mode, fixturePath);
             bool unloaded = Collect(refs);
             Console.WriteLine($"ROUND {round} authorAlive={refs[0].IsAlive} frameworkAlive={refs[1].IsAlive} collected={unloaded}");
-            success &= unloaded == expectUnload;
+            success &= expectUnload ? unloaded : refs.Take(2).All(r => r.IsAlive);
+            if (mode == "session")
+            {
+                bool graphReleased = refs.Skip(2).All(r => !r.IsAlive);
+                Console.WriteLine($"SESSION_GRAPH round={round} optionsAlive={refs[2].IsAlive} resolverAlive={refs[3].IsAlive} typeInfoAlive={refs[4].IsAlive}");
+                success &= graphReleased;
+            }
             if (mode == "held")
             {
+                success &= refs.Skip(2).All(r => r.IsAlive);
                 s_held = null;
                 bool afterRelease = Collect(refs);
                 Console.WriteLine($"HELD_RELEASE round={round} collected={afterRelease}");
-                success &= afterRelease == patched; // baseline accessor cache remains; patched must release
+                success &= patched ? afterRelease : refs.Take(2).All(r => r.IsAlive);
+                success &= refs.Skip(2).All(r => !r.IsAlive);
             }
             if (mode != "no")
             {
@@ -130,6 +140,13 @@ internal static class Program
         if (at == ft || !at.IsCollectible || !ft.IsCollectible)
             throw new Exception("Context identity/collectibility failure.");
         object av = Activator.CreateInstance(at)!, fv = Activator.CreateInstance(ft)!;
+        at.GetProperty("Text")!.SetValue(av, "author");
+        ft.GetProperty("Text")!.SetValue(fv, "framework");
+        at.GetField("Number")!.SetValue(av, 101);
+        ft.GetField("Number")!.SetValue(fv, 202);
+        ((DefaultBase)av).Inherited = "author-base";
+        ((DefaultBase)fv).Inherited = "framework-base";
+        WeakReference[]? graphRefs = null;
         if (mode != "no")
         {
             JsonSerializerOptions options = mode == "default" ? JsonSerializerOptions.Default : NewOptions();
@@ -142,8 +159,6 @@ internal static class Program
                 Console.WriteLine($"SHARING equivalentToLiveDefault={shared}");
                 if (!shared) throw new Exception("Equivalent options control did not share the live context.");
             }
-            JsonTypeInfo info = options.GetTypeInfo(at);
-            if (mode == "held") s_held = (options, info);
             using Barrier start = new(4);
             ConcurrentDictionary<int, byte> threads = new();
             Task[] tasks = Enumerable.Range(0, 4).Select(_ => Task.Factory.StartNew(() =>
@@ -165,6 +180,9 @@ internal static class Program
             pair.GetProperty("Left")!.SetValue(pv, av);
             pair.GetProperty("Right")!.SetValue(pv, fv);
             RoundTrip(pv, pair, options);
+            JsonTypeInfo info = options.GetTypeInfo(pair); // configured, cached metadata depending on both contexts
+            graphRefs = [new(options), new(options.TypeInfoResolver!), new(info)];
+            if (mode == "held") s_held = (options, info);
             if (pair.Assembly.IsCollectible || !pair.IsCollectible) throw new Exception("Closed generic IsCollectible control.");
             PropertyInfo inherited = at.GetProperty(nameof(DefaultBase.Inherited))!;
             if (inherited.DeclaringType != typeof(DefaultBase) || !inherited.IsCollectible)
@@ -183,11 +201,19 @@ internal static class Program
             Array array = Array.CreateInstance(at, 1);
             array.SetValue(av, 0);
             RoundTrip(array, array.GetType(), options);
-            RoundTrip(Activator.CreateInstance(typeof(Stack<>).MakeGenericType(at))!, typeof(Stack<>).MakeGenericType(at), options);
-            RoundTrip(Activator.CreateInstance(typeof(ImmutableArray<>).MakeGenericType(at))!, typeof(ImmutableArray<>).MakeGenericType(at), options, "[]");
+            Type stackType = typeof(Stack<>).MakeGenericType(at);
+            object stack = Activator.CreateInstance(stackType)!;
+            stackType.GetMethod("Push")!.Invoke(stack, [av]);
+            RoundTrip(stack, stackType, options);
+            MethodInfo createArray = typeof(ImmutableArray).GetMethods().Single(m =>
+                m.Name == "CreateRange" && m.IsGenericMethodDefinition && m.GetParameters() is [var p] &&
+                p.ParameterType.IsGenericType && p.ParameterType.GetGenericTypeDefinition() == typeof(IEnumerable<>));
+            object immutableArray = createArray.MakeGenericMethod(at).Invoke(null, [array])!;
+            RoundTrip(immutableArray, immutableArray.GetType(), options);
             Type dict = typeof(ImmutableDictionary<,>).MakeGenericType(typeof(string), at);
             object empty = dict.GetField("Empty", BindingFlags.Static | BindingFlags.Public)!.GetValue(null)!;
-            RoundTrip(empty, dict, options);
+            object dictionary = dict.GetMethod("Add", [typeof(string), at])!.Invoke(empty, ["entry", av])!;
+            RoundTrip(dictionary, dict, options);
             RoundTrip(null, a.GetType("CollectibleCacheProbe.Fixture.SmallConstructor")!, options, "{\"Text\":\"small\",\"Number\":9}");
             RoundTrip(null, a.GetType("CollectibleCacheProbe.Fixture.LargeConstructor")!, options, "{\"A\":1,\"B\":2,\"C\":3,\"D\":4,\"E\":\"large\"}");
 
@@ -196,13 +222,16 @@ internal static class Program
             for (int i = 0; i < 300; i++)
             {
                 Type t = matrix.MakeGenericType(stable[i % 8], stable[(i / 8) % 8], stable[(i / 64) % 8]);
-                RoundTrip(Activator.CreateInstance(t)!, t, options);
+                object value = Activator.CreateInstance(t)!;
+                t.GetProperty("Text")!.SetValue(value, $"matrix-{i}");
+                t.GetField("Number")!.SetValue(value, i + 500);
+                RoundTrip(value, t, options);
             }
             // Fresh final accessor prevents elapsed TTL/earlier evictions from hiding the regression.
             Type last = matrix.MakeGenericType(ft, typeof(int), typeof(int));
             RoundTrip(Activator.CreateInstance(last)!, last, options);
         }
-        WeakReference[] result = [new(author), new(framework)];
+        WeakReference[] result = graphRefs is null ? [new(author), new(framework)] : [new(author), new(framework), .. graphRefs];
         author.Unload();
         framework.Unload();
         return result;
@@ -213,8 +242,12 @@ internal static class Program
         string json = input ?? JsonSerializer.Serialize(value, type, options);
         object? result = JsonSerializer.Deserialize(json, type, options);
         string actual = JsonSerializer.Serialize(result, type, options);
-        if (input is null && actual != json) throw new Exception($"Round-trip mismatch: {type}");
         if (result is null) throw new Exception("Unexpected null.");
+        if (result.GetType() != type) throw new Exception("Deserialization returned the wrong context/type identity.");
+        using JsonDocument expectedDocument = JsonDocument.Parse(json);
+        using JsonDocument actualDocument = JsonDocument.Parse(actual);
+        if (!JsonElement.DeepEquals(expectedDocument.RootElement, actualDocument.RootElement))
+            throw new Exception($"Round-trip value mismatch: {type}");
         Interlocked.Increment(ref s_roundTrips);
     }
 
