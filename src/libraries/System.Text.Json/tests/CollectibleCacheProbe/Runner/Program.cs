@@ -14,6 +14,7 @@ internal static class Program
 {
     private static object? s_held;
     private static int s_roundTrips;
+    private static bool s_required;
 
     private sealed class Context(string name) : AssemblyLoadContext(name, isCollectible: true)
     {
@@ -40,10 +41,18 @@ internal static class Program
         string mode = args[0]; // no, session, default, held, equivalent
         string fixturePath = Path.GetFullPath(args[1]);
         bool patched = args.Length > 2 && args[2] == "patched";
+        s_required = args.Contains("required");
         bool expectUnload = mode == "no" || (patched && mode == "session");
         Assembly stj = typeof(JsonSerializer).Assembly;
-        Console.WriteLine($"IDENTITY runtime={Environment.Version} corelib={typeof(object).Assembly.Location} stj={stj.Location} sha256={Convert.ToHexString(SHA256.HashData(File.ReadAllBytes(stj.Location)))} tfm={stj.GetCustomAttribute<System.Runtime.Versioning.TargetFrameworkAttribute>()?.FrameworkName}");
-        Console.WriteLine($"MODE {mode} expectUnload={expectUnload} cleanup=none");
+        Console.WriteLine($"IDENTITY runtime={Environment.Version} corelib={typeof(object).Assembly.Location} corelibTfm={typeof(object).Assembly.GetCustomAttribute<System.Runtime.Versioning.TargetFrameworkAttribute>()?.FrameworkName} stj={stj.Location} sha256={Convert.ToHexString(SHA256.HashData(File.ReadAllBytes(stj.Location)))} tfm={stj.GetCustomAttribute<System.Runtime.Versioning.TargetFrameworkAttribute>()?.FrameworkName}");
+        Console.WriteLine($"MODE {mode} expectUnload={expectUnload} required={s_required} cleanup=none");
+
+        if (mode == "accessor")
+        {
+            AccessorCases.Run(fixturePath, patched);
+            return 0;
+        }
+        if (mode == "identity") return 0;
 
         (bool success, WeakReference foreignRef) = Run(mode, fixturePath, patched, expectUnload);
         bool foreignUnloaded = Collect([foreignRef]);
@@ -101,7 +110,8 @@ internal static class Program
     [MethodImpl(MethodImplOptions.NoInlining)]
     private static WeakReference[] Exercise(string mode, string path)
     {
-        Context author = new("author"), framework = new("framework");
+        AssemblyLoadContext author = CreateAuthor();
+        Context framework = new("framework");
         Assembly a = author.LoadFromAssemblyPath(path), f = framework.LoadFromAssemblyPath(path);
         Type at = a.GetType("CollectibleCacheProbe.Fixture.Dto")!, ft = f.GetType("CollectibleCacheProbe.Fixture.Dto")!;
         if (at == ft || !at.IsCollectible || !ft.IsCollectible)
@@ -182,6 +192,21 @@ internal static class Program
         if (input is null && actual != json) throw new Exception($"Round-trip mismatch: {type}");
         if (result is null) throw new Exception("Unexpected null.");
         Interlocked.Increment(ref s_roundTrips);
+    }
+
+    private static AssemblyLoadContext CreateAuthor()
+    {
+        if (!s_required) return new Context("author");
+        // Optional matching-fork loader check. This creates the context only; it performs no cache cleanup.
+        MethodInfo factory = typeof(AssemblyLoadContext).GetMethod("RuneCLR_CreateInterpreterRequired", BindingFlags.Static | BindingFlags.NonPublic)
+            ?? throw new PlatformNotSupportedException("Matching interpreter-required loader is absent.");
+        Func<AssemblyLoadContext, AssemblyName, Assembly?> resolver = static (_, name) =>
+            name.Name == typeof(DefaultBase).Assembly.GetName().Name ? typeof(DefaultBase).Assembly : null;
+        AssemblyLoadContext context = (AssemblyLoadContext)factory.Invoke(null, ["author-required", resolver])!;
+        MethodInfo policy = typeof(AssemblyLoadContext).GetMethod("RuneCLR_GetExecutionPolicy", BindingFlags.Instance | BindingFlags.NonPublic)!;
+        if (!context.IsCollectible || (int)policy.Invoke(context, null)! != 1) throw new Exception("Interpreter-required policy mismatch.");
+        Console.WriteLine("POLICY author=1 collectible=True");
+        return context;
     }
 
     [MethodImpl(MethodImplOptions.NoInlining)]
