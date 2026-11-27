@@ -35,7 +35,9 @@ successful-unload claim. Inspect `ROUND` and `FOREIGN_RELEASE` as well.
 | `session` | Unique resolver and session-owned options/type info | Two rounds and foreign context unload |
 | `held` | Deliberately retain options and type info | Stay alive while retained; unload after explicit release |
 | `default` | Permanently live `JsonSerializerOptions.Default` | Subject contexts stay alive; foreign remains usable, then unloads |
-| `equivalent` | Options copied from Default, allowing context sharing | Same intentional retention control |
+| `equivalent` | Prewarm Default, copy its options, and assert shared public type-info identity | Same intentional retention control |
+| `accessor` | Directly invoke all cached factories; execute delegates and compare identity | 8 stable cache-hit controls; 21 collectible/unproven inputs bypass |
+| `identity` | Print actual runtime/library identity without exercising serialization | Matching CoreLib/library TFM required for the net12 candidate |
 
 Each serialization round exercises concurrent serialization/deserialization on four workers,
 300 distinct constructed collectible DTO types, an inherited Default-base member whose
@@ -44,6 +46,12 @@ nested generic wrappers, arrays, stack addition, immutable collection factories,
 large parameterized constructors. Both rounds execute in one process. An independent foreign
 context and Default DTO remain usable across the subject unloads. All retained observations
 are scalar values or WeakReferences; collection occurs outside the subject helper frame.
+
+The factory cases include each of the four small-constructor delegate argument slots while
+the constructor/key remain stable, covariant constructor results, collectible receivers,
+and forwarding custom Type/PropertyInfo instances that report `IsCollectible == false` but
+hold an additional collectible object. An implementation's reported flag alone cannot prove
+that an arbitrary user-defined reflection wrapper is safe to keep globally.
 
 Append `required` to run the author context through this fork's optional interpreter-required
 loader. Its policy is checked as 1 and collectible; framework/foreign remain ordinary. This

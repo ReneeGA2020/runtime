@@ -1,6 +1,7 @@
 // Licensed to the .NET Foundation under one or more agreements.
 // The .NET Foundation licenses this file to you under the MIT license.
 
+using System.Collections.Concurrent;
 using System.Collections.Immutable;
 using System.Reflection;
 using System.Runtime.CompilerServices;
@@ -38,13 +39,20 @@ internal static class Program
 
     private static int Main(string[] args)
     {
+        if (args.Length < 3 || args[0] is not ("no" or "session" or "default" or "held" or "equivalent" or "accessor" or "identity") ||
+            args[2] is not ("baseline" or "patched"))
+            throw new ArgumentException("Usage: Runner <no|session|default|held|equivalent|accessor|identity> <fixture.dll> <baseline|patched> [required]");
         string mode = args[0]; // no, session, default, held, equivalent
         string fixturePath = Path.GetFullPath(args[1]);
         bool patched = args.Length > 2 && args[2] == "patched";
         s_required = args.Contains("required");
         bool expectUnload = mode == "no" || (patched && mode == "session");
         Assembly stj = typeof(JsonSerializer).Assembly;
-        Console.WriteLine($"IDENTITY runtime={Environment.Version} corelib={typeof(object).Assembly.Location} corelibTfm={typeof(object).Assembly.GetCustomAttribute<System.Runtime.Versioning.TargetFrameworkAttribute>()?.FrameworkName} stj={stj.Location} sha256={Convert.ToHexString(SHA256.HashData(File.ReadAllBytes(stj.Location)))} tfm={stj.GetCustomAttribute<System.Runtime.Versioning.TargetFrameworkAttribute>()?.FrameworkName}");
+        string? coreTfm = typeof(object).Assembly.GetCustomAttribute<System.Runtime.Versioning.TargetFrameworkAttribute>()?.FrameworkName;
+        string? libraryTfm = stj.GetCustomAttribute<System.Runtime.Versioning.TargetFrameworkAttribute>()?.FrameworkName;
+        Console.WriteLine($"IDENTITY runtime={Environment.Version} corelib={typeof(object).Assembly.Location} corelibTfm={coreTfm} stj={stj.Location} sha256={Convert.ToHexString(SHA256.HashData(File.ReadAllBytes(stj.Location)))} tfm={libraryTfm}");
+        if (libraryTfm == ".NETCoreApp,Version=v12.0" && coreTfm != libraryTfm)
+            throw new PlatformNotSupportedException("This net12.0 library requires a matching net12.0 runtime, not a relabeled older runtime.");
         Console.WriteLine($"MODE {mode} expectUnload={expectUnload} required={s_required} cleanup=none");
 
         if (mode == "accessor")
@@ -72,6 +80,11 @@ internal static class Program
         {
             RoundTrip(new DefaultBase(), typeof(DefaultBase), NewOptions());
             RoundTrip(foreign.Value, foreign.Type, foreign.Options);
+            if (mode == "equivalent")
+            {
+                // Materialize the live owner's context before constructing equivalent copies.
+                RoundTrip(new DefaultBase(), typeof(DefaultBase), JsonSerializerOptions.Default);
+            }
         }
 
         bool success = true;
@@ -124,17 +137,28 @@ internal static class Program
             {
                 // Same resolver/configuration as permanently live Default: intentional sharing control.
                 options = new JsonSerializerOptions(JsonSerializerOptions.Default);
+                options.MakeReadOnly();
+                bool shared = ReferenceEquals(options.GetTypeInfo(typeof(DefaultBase)), JsonSerializerOptions.Default.GetTypeInfo(typeof(DefaultBase)));
+                Console.WriteLine($"SHARING equivalentToLiveDefault={shared}");
+                if (!shared) throw new Exception("Equivalent options control did not share the live context.");
             }
             JsonTypeInfo info = options.GetTypeInfo(at);
             if (mode == "held") s_held = (options, info);
-            Parallel.For(0, 4, _ =>
+            using Barrier start = new(4);
+            ConcurrentDictionary<int, byte> threads = new();
+            Task[] tasks = Enumerable.Range(0, 4).Select(_ => Task.Factory.StartNew(() =>
             {
+                threads.TryAdd(Environment.CurrentManagedThreadId, 0);
+                start.SignalAndWait();
                 for (int i = 0; i < 12; i++)
                 {
                     RoundTrip(av, at, options);
                     RoundTrip(fv, ft, options);
                 }
-            });
+            }, CancellationToken.None, TaskCreationOptions.LongRunning, TaskScheduler.Default)).ToArray();
+            Task.WaitAll(tasks);
+            if (threads.Count != 4) throw new Exception("Expected four distinct concurrent worker threads.");
+            Console.WriteLine($"CONCURRENCY threads={threads.Count}");
 
             Type pair = typeof(Pair<,>).MakeGenericType(at, ft);
             object pv = Activator.CreateInstance(pair)!;

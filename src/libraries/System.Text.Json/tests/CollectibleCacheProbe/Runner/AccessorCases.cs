@@ -34,7 +34,7 @@ public static class AccessorCases
         public void Enqueue(object value) => Last = value;
     }
 
-    private sealed class UnknownProperty(PropertyInfo inner) : PropertyInfo
+    private class UnknownProperty(PropertyInfo inner) : PropertyInfo
     {
         public override PropertyAttributes Attributes => inner.Attributes;
         public override bool CanRead => inner.CanRead;
@@ -54,6 +54,18 @@ public static class AccessorCases
             inner.GetValue(obj, invokeAttr, binder, index, culture);
         public override void SetValue(object? obj, object? value, BindingFlags invokeAttr, Binder? binder, object?[]? index, System.Globalization.CultureInfo? culture) =>
             inner.SetValue(obj, value, invokeAttr, binder, index, culture);
+    }
+
+    private sealed class UntrustedProperty(PropertyInfo inner, object owner) : UnknownProperty(inner)
+    {
+        public object Owner { get; } = owner;
+        public override bool IsCollectible => false;
+    }
+
+    private sealed class UntrustedType(Type inner, object owner) : TypeDelegator(inner)
+    {
+        public object Owner { get; } = owner;
+        public override bool IsCollectible => false;
     }
 
     public static void Run(string fixturePath, bool patched)
@@ -123,6 +135,21 @@ public static class AccessorCases
             .DynamicInvoke()!.GetType() == crossTuple, "Cross-context type-only constructor failed.");
         object firstValue = Check("collectible-parameterless-ctor", "CreateParameterlessConstructor", [], [first, first.GetConstructor(Type.EmptyTypes)], false)
             .DynamicInvoke()!;
+        var untrustedProperty = new UntrustedProperty(stableProperty, firstValue);
+        Require(!untrustedProperty.IsCollectible && untrustedProperty.Owner.GetType().IsCollectible
+            && untrustedProperty.DeclaringType == typeof(DefaultBase) && untrustedProperty.ReflectedType == typeof(DefaultBase),
+            "Unknown property must report stable metadata but hold a collectible owner.");
+        Require(Equals(Check("untrusted-property-wrapper", "CreatePropertyGetter", [typeof(string)], [untrustedProperty], false)
+            .DynamicInvoke(stable), stable.Inherited), "Untrusted forwarding property getter failed.");
+
+        var untrustedType = new UntrustedType(typeof(DefaultBase), firstValue);
+        ConstructorInfo stableParameterless = typeof(DefaultBase).GetConstructor(Type.EmptyTypes)!;
+        Require(!untrustedType.IsCollectible && untrustedType.Owner.GetType().IsCollectible
+            && untrustedType.UnderlyingSystemType == typeof(DefaultBase) && !stableParameterless.IsCollectible,
+            "Unknown type must report stable metadata but hold a collectible owner.");
+        Require(Check("untrusted-type-wrapper", "CreateParameterlessConstructor", [], [untrustedType, stableParameterless], false)
+            .DynamicInvoke() is DefaultBase { Inherited: "base" }, "Untrusted forwarding type constructor failed.");
+
         object secondValue = Activator.CreateInstance(second)!;
         object crossValue = Activator.CreateInstance(crossContext)!;
         PropertyInfo crossProperty = crossContext.GetProperty(nameof(Pair<object, object>.Left))!;
