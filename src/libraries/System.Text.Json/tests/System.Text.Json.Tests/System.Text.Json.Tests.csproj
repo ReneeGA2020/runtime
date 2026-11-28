@@ -223,6 +223,7 @@
     <Compile Include="Serialization\MetadataTests\DefaultJsonTypeInfoResolverTests.JsonTypeInfo.cs" />
     <Compile Include="Serialization\MetadataTests\DefaultJsonTypeInfoResolverTests.cs" />
     <Compile Include="Serialization\MetadataTests\MetadataTests.cs" />
+    <Compile Include="Serialization\MetadataTests\CollectibleAccessorTests.cs" />
     <Compile Include="Serialization\MetadataTests\TestResolver.cs" />
     <Compile Include="Serialization\NamingPolicyUnitTests.cs" />
     <Compile Include="Serialization\NodeInteropTests.cs" />

@@ -23,63 +23,87 @@ namespace System.Text.Json.Serialization.Metadata
 
         public override void Clear() => _cache.Clear();
 
+        private TValue GetOrAdd<TValue>(
+            (string id, Type declaringType, MemberInfo? member) key,
+            Func<(string id, Type declaringType, MemberInfo? member), TValue> valueFactory) where TValue : class?
+        {
+#if NET
+            // Both the key and the generated delegate can depend on collectible types.
+            // In particular, a constructed type can be collectible even when its assembly
+            // is not, and a member inherited from a stable type can have a collectible ReflectedType.
+            // Do not give these accessors a lifetime beyond their owning JsonTypeInfo.
+            if (key.declaringType.GetType() != typeof(object).GetType() ||
+                (key.member is not null && key.member.GetType().Assembly != typeof(MemberInfo).Assembly) ||
+                key.declaringType.IsCollectible ||
+                key.member?.IsCollectible == true ||
+                typeof(TValue).IsCollectible)
+            {
+                // Custom reflection implementations cannot be assumed to describe only
+                // stable runtime types, even when they override IsCollectible to return false.
+                return valueFactory(key);
+            }
+#endif
+
+            return _cache.GetOrAdd(key, valueFactory);
+        }
+
         public override Action<TCollection, object?> CreateAddMethodDelegate<[DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicMethods)] TCollection>() =>
-            _cache.GetOrAdd(
+            GetOrAdd(
                 key: (nameof(CreateAddMethodDelegate), typeof(TCollection), null),
                 _ => _sourceAccessor.CreateAddMethodDelegate<TCollection>());
 
         public override Func<object>? CreateParameterlessConstructor(Type type, ConstructorInfo? ctorInfo) =>
-            _cache.GetOrAdd(
+            GetOrAdd(
                 key: (nameof(CreateParameterlessConstructor), type, ctorInfo),
                 valueFactory: key => _sourceAccessor.CreateParameterlessConstructor(key.declaringType, (ConstructorInfo?)key.member));
 
         public override Func<object, TProperty> CreateFieldGetter<TProperty>(FieldInfo fieldInfo) =>
-            _cache.GetOrAdd(
+            GetOrAdd(
                 key: (nameof(CreateFieldGetter), typeof(TProperty), fieldInfo),
                 valueFactory: key => _sourceAccessor.CreateFieldGetter<TProperty>((FieldInfo)key.member!));
 
         public override Action<object, TProperty> CreateFieldSetter<TProperty>(FieldInfo fieldInfo) =>
-            _cache.GetOrAdd(
+            GetOrAdd(
                 key: (nameof(CreateFieldSetter), typeof(TProperty), fieldInfo),
                 valueFactory: key => _sourceAccessor.CreateFieldSetter<TProperty>((FieldInfo)key.member!));
 
         public override Func<IEnumerable<KeyValuePair<TKey, TValue>>, TCollection> CreateImmutableDictionaryCreateRangeDelegate<TCollection, TKey, TValue>() =>
-            _cache.GetOrAdd(
+            GetOrAdd(
                 key: (nameof(CreateImmutableDictionaryCreateRangeDelegate), typeof((TCollection, TKey, TValue)), null),
                 valueFactory: _ => _sourceAccessor.CreateImmutableDictionaryCreateRangeDelegate<TCollection, TKey, TValue>());
 
         public override Func<IEnumerable<TElement>, TCollection> CreateImmutableEnumerableCreateRangeDelegate<TCollection, TElement>() =>
-            _cache.GetOrAdd(
+            GetOrAdd(
                 key: (nameof(CreateImmutableEnumerableCreateRangeDelegate), typeof((TCollection, TElement)), null),
                 valueFactory: _ => _sourceAccessor.CreateImmutableEnumerableCreateRangeDelegate<TCollection, TElement>());
 
         public override Func<object?[], T> CreateParameterizedConstructor<T>(ConstructorInfo constructor) =>
-            _cache.GetOrAdd(
+            GetOrAdd(
                 key: (nameof(CreateParameterizedConstructor), typeof(T), constructor),
                 valueFactory: key => _sourceAccessor.CreateParameterizedConstructor<T>((ConstructorInfo)key.member!));
 
         public override JsonTypeInfo.ParameterizedConstructorDelegate<T, TArg0, TArg1, TArg2, TArg3>? CreateParameterizedConstructor<T, TArg0, TArg1, TArg2, TArg3>(ConstructorInfo constructor) =>
-            _cache.GetOrAdd(
+            GetOrAdd(
                 key: (nameof(CreateParameterizedConstructor), typeof(T), constructor),
                 valueFactory: key => _sourceAccessor.CreateParameterizedConstructor<T, TArg0, TArg1, TArg2, TArg3>((ConstructorInfo)key.member!));
 
         public override Func<object?, T> CreateSingleParameterConstructor<T>(ConstructorInfo constructor) =>
-            _cache.GetOrAdd(
+            GetOrAdd(
                 key: (nameof(CreateSingleParameterConstructor), typeof(T), constructor),
                 valueFactory: key => _sourceAccessor.CreateSingleParameterConstructor<T>((ConstructorInfo)key.member!));
 
         public override Func<object, TProperty> CreatePropertyGetter<TProperty>(PropertyInfo propertyInfo) =>
-            _cache.GetOrAdd(
+            GetOrAdd(
                 key: (nameof(CreatePropertyGetter), typeof(TProperty), propertyInfo),
                 valueFactory: key => _sourceAccessor.CreatePropertyGetter<TProperty>((PropertyInfo)key.member!));
 
         public override Func<TDeclaringType, TProperty> CreatePropertyGetter<TDeclaringType, TProperty>(PropertyInfo propertyInfo) =>
-            _cache.GetOrAdd(
+            GetOrAdd(
                 key: ("CreatePropertyGetter`2", typeof((TDeclaringType, TProperty)), propertyInfo),
                 valueFactory: key => _sourceAccessor.CreatePropertyGetter<TDeclaringType, TProperty>((PropertyInfo)key.member!));
 
         public override Action<object, TProperty> CreatePropertySetter<TProperty>(PropertyInfo propertyInfo) =>
-            _cache.GetOrAdd(
+            GetOrAdd(
                 key: (nameof(CreatePropertySetter), typeof(TProperty), propertyInfo),
                 valueFactory: key => _sourceAccessor.CreatePropertySetter<TProperty>((PropertyInfo)key.member!));
 
