@@ -22,6 +22,26 @@ namespace System.Text.Json.Serialization.Tests
 
         public static bool IsSupported => RemoteExecutor.IsSupported && RuntimeFeature.IsDynamicCodeSupported;
 
+        [ConditionalFact(typeof(RemoteExecutor), nameof(RemoteExecutor.IsSupported))]
+        public static void ReflectionFallbackDoesNotRequireEmitAccessor()
+        {
+            RemoteInvokeOptions options = new()
+            {
+                RuntimeConfigurationOptions =
+                {
+                    ["System.Runtime.CompilerServices.RuntimeFeature.IsDynamicCodeSupported"] = false
+                }
+            };
+
+            RemoteExecutor.Invoke(static () =>
+            {
+                Assert.False(RuntimeFeature.IsDynamicCodeSupported);
+                JsonSerializerOptions serializerOptions = new() { TypeInfoResolver = new DefaultJsonTypeInfoResolver() };
+                string json = JsonSerializer.Serialize(new CollectibleDto { Text = "fallback-value" }, serializerOptions);
+                Assert.Equal("fallback-value", JsonSerializer.Deserialize<CollectibleDto>(json, serializerOptions)!.Text);
+            }, options).Dispose();
+        }
+
         [ConditionalTheory(nameof(IsSupported))]
         [InlineData(false)]
         [InlineData(true)]
